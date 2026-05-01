@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     yantra4d_url: str = "http://yantra4d-api:8000"
     factlas_url: str = "http://factlas-api:8000"
     ceq_url: str = "http://ceq-api:8000"
+    selva_url: str = "http://autoswarm-api:8000"   # LLM inference router (Selva)
+    dhanam_url: str = "http://dhanam-api:8000"      # Billing + entitlements
 
     # GPU orchestration
     gpu_provider: str = "vast"

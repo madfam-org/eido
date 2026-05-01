@@ -16,12 +16,14 @@ from eido_api.db.session import close_db, init_db
 from eido_api.db.redis import close_redis, init_redis
 from eido_api.routers import (
     captures,
+    collections,
     export,
     handoffs,
     health,
     jobs,
     search,
     social,
+    tokens,
 )
 
 settings = get_settings()
@@ -63,12 +65,14 @@ app.mount("/metrics", make_asgi_app())
 
 # ── Routers ────────────────────────────────────────────────────────────────────
 app.include_router(health.router, tags=["health"])
-app.include_router(captures.router, prefix="/api/v1/captures", tags=["captures"])
-app.include_router(jobs.router,     prefix="/api/v1/jobs",     tags=["jobs"])
-app.include_router(handoffs.router, prefix="/api/v1/handoffs", tags=["handoffs"])
-app.include_router(social.router,   prefix="/api/v1/social",   tags=["social"])
-app.include_router(search.router,   prefix="/api/v1/search",   tags=["search"])
-app.include_router(export.router,   prefix="/api/v1/export",   tags=["export"])
+app.include_router(captures.router,     prefix="/api/v1/captures",     tags=["captures"])
+app.include_router(jobs.router,         prefix="/api/v1/jobs",         tags=["jobs"])
+app.include_router(handoffs.router,     prefix="/api/v1/handoffs",     tags=["handoffs"])
+app.include_router(social.router,       prefix="/api/v1/social",       tags=["social"])
+app.include_router(search.router,       prefix="/api/v1/search",       tags=["search"])
+app.include_router(export.router,       prefix="/api/v1/export",       tags=["export"])
+app.include_router(collections.router,  prefix="/api/v1/collections",  tags=["collections"])
+app.include_router(tokens.router,       prefix="/api/v1/tokens",       tags=["tokens"])
 
 
 @app.get("/")

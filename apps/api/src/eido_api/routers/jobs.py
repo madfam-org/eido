@@ -140,4 +140,14 @@ async def update_capture_status(
 
     await db.flush()
     logger.info("Capture %s status → %s", capture_id, data.status)
+
+    # On READY: fire auto-tagging (Selva) + ecosystem handoffs in background
+    if data.status == CaptureStatus.READY.value and capture.is_public:
+        from eido_api.services.auto_tag import auto_tag_capture
+        from eido_api.services.handoff import dispatch_all_handoffs
+        import asyncio
+        asyncio.create_task(auto_tag_capture(str(capture_id)))
+        asyncio.create_task(dispatch_all_handoffs(str(capture_id)))
+
     return {"ok": True}
+
