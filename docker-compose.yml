@@ -1,0 +1,72 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: eido
+      POSTGRES_USER: eido
+      POSTGRES_PASSWORD: eido
+    ports: ["5432:5432"]
+    volumes: [pg_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eido"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    command: redis-server --appendonly yes
+    volumes: [redis_data:/data]
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: eido
+      MINIO_ROOT_PASSWORD: eido1234
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [minio_data:/data]
+
+  api:
+    build: apps/api
+    ports: ["8000:8000"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://eido:eido@postgres:5432/eido
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY_ID: eido
+      S3_SECRET_ACCESS_KEY: eido1234
+      S3_BUCKET_RAW: eido-raw
+      S3_BUCKET_CDN: eido-cdn
+      JANUA_URL: "${JANUA_URL:-http://host.docker.internal:8080}"
+      BLUEPRINT_HARVESTER_URL: "${BLUEPRINT_HARVESTER_URL:-http://host.docker.internal:8100}"
+      YANTRA4D_URL: "${YANTRA4D_URL:-http://host.docker.internal:8200}"
+      FACTLAS_URL: "${FACTLAS_URL:-http://host.docker.internal:8300}"
+      CEQ_URL: "${CEQ_URL:-http://host.docker.internal:8400}"
+    depends_on: [postgres, redis, minio]
+    volumes: ["./apps/api:/app"]
+
+  orchestration:
+    build: services/orchestration
+    environment:
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY_ID: eido
+      S3_SECRET_ACCESS_KEY: eido1234
+      GPU_PROVIDER: local
+    depends_on: [redis]
+
+  web:
+    build: apps/web
+    ports: ["3000:3000"]
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_CDN_URL: http://localhost:9000/eido-cdn
+    depends_on: [api]
+
+volumes:
+  pg_data:
+  redis_data:
+  minio_data:

@@ -1,0 +1,15 @@
+node_modules/
+.next/
+dist/
+.venv/
+__pycache__/
+*.pyc
+.env
+*.env.local
+.DS_Store
+.turbo/
+coverage/
+*.log
+*.spz
+*.ply
+*.splat
