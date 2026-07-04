@@ -2,6 +2,24 @@
 **Domains:** `eido.cam` (Product/Gallery) | `eidocam.com` (Redirect)
 **Entity:** Innovaciones MADFAM SAS de CV
 
+## Current Status (2026-07-04)
+
+Eido is a **concept / PRD — there is no working product**. This document
+describes what Eido is intended to become, not what exists.
+
+- The repository is a **single-commit code skeleton**: a Next.js web shell
+  (`apps/web`), a FastAPI skeleton (`apps/api`), and thin stub containers for
+  the pipeline stages (`services/*`, a few hundred lines total). None of it has
+  been verified to run end-to-end, and there are no tests, releases, or
+  deployments.
+- **Not built**, despite the repo structure in Section 5: the iOS/Android
+  capture apps (`apps/mobile-ios`, `apps/mobile-android`), the `packages/`
+  libraries (`r3f-splat-viewer`, `eido-sdk`), and `ops/terraform`.
+- The Quickstart in Section 6 references a different repository URL and sample
+  data that do not exist here; it cannot currently be followed.
+
+Read everything below as **vision/roadmap**.
+
 ## 1. Vision & Philosophy
 Eido is the sovereign optical sensor and spatial gallery of the MADFAM ecosystem. Derived from *Eidos* (the classical concept of pure, ideal form), the platform operates on a single truth: to extract the exact, metric geometry of a physical object from the noise of reality. 
 
