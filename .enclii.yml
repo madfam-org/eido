@@ -61,11 +61,25 @@ spec:
         secretKeyRef:
           name: eido-secrets
           key: r2-secret-access-key
+    # R2 S3-API endpoint is account-specific:
+    # https://<cloudflare-account-id>.r2.cloudflarestorage.com — NOT the generic host.
+    - name: S3_ENDPOINT
+      valueFrom:
+        secretKeyRef:
+          name: eido-secrets
+          key: r2-endpoint
     - name: API_SECRET_KEY
       valueFrom:
         secretKeyRef:
           name: eido-secrets
           key: api-secret-key
+    # Shared secret for the orchestration worker → API status callback.
+    # Must match the identical value on eido-orchestration.
+    - name: INTERNAL_API_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: eido-secrets
+          key: internal-api-token
     - name: JANUA_URL
       value: "https://auth.madfam.io"
     - name: JANUA_JWKS_URL
@@ -82,8 +96,6 @@ spec:
       value: "https://api.autoswarm.ai"
     - name: DHANAM_URL
       value: "https://api.dhanam.madfam.io"
-    - name: S3_ENDPOINT
-      value: "https://r2.cloudflarestorage.com"
     - name: S3_BUCKET_RAW
       value: "eido-raw-production"
     - name: S3_BUCKET_CDN
@@ -164,6 +176,11 @@ spec:
     latencyP95: 100
     errorRate: 0.5
 
+# NOTE: cdn.eido.cam is NOT an Enclii service domain. It is served directly by
+# the Cloudflare R2 bucket `eido-cdn-production` via an R2 custom domain (set in
+# the Cloudflare dashboard / API once the zone is on Cloudflare). See
+# ops/provision.sh Step 5 and the deployment runbook.
+
 ---
 apiVersion: enclii.dev/v1
 kind: Service
@@ -211,12 +228,29 @@ spec:
         secretKeyRef:
           name: eido-secrets
           key: r2-secret-access-key
+    - name: S3_ENDPOINT
+      valueFrom:
+        secretKeyRef:
+          name: eido-secrets
+          key: r2-endpoint
     - name: VAST_API_KEY
       valueFrom:
         secretKeyRef:
           name: eido-secrets
           key: vast-api-key
+    # Must match the identical value on eido-api (worker → API status callback).
+    - name: INTERNAL_API_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: eido-secrets
+          key: internal-api-token
     - name: EIDO_API_URL
       value: "http://eido-api:8000"
+    - name: S3_BUCKET_RAW
+      value: "eido-raw-production"
+    - name: S3_BUCKET_CDN
+      value: "eido-cdn-production"
+    - name: CDN_BASE_URL
+      value: "https://cdn.eido.cam"
     - name: GPU_PROVIDER
       value: "vast"
