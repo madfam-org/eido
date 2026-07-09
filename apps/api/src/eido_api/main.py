@@ -23,7 +23,6 @@ from eido_api.routers import (
     jobs,
     search,
     social,
-    tokens,
 )
 
 settings = get_settings()
@@ -72,7 +71,10 @@ app.include_router(social.router,       prefix="/api/v1/social",       tags=["so
 app.include_router(search.router,       prefix="/api/v1/search",       tags=["search"])
 app.include_router(export.router,       prefix="/api/v1/export",       tags=["export"])
 app.include_router(collections.router,  prefix="/api/v1/collections",  tags=["collections"])
-app.include_router(tokens.router,       prefix="/api/v1/tokens",       tags=["tokens"])
+# Self-issued `eido_` API tokens were removed: Janua is the identity master and
+# issues machine tokens (README §3). The parallel token system was never
+# validated anywhere, so it was dead code as well as an SoC violation. The
+# orphaned `api_tokens` table should be dropped in a follow-up migration.
 
 
 @app.get("/")

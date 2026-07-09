@@ -22,6 +22,10 @@ class Settings(BaseSettings):
 
     janua_url: str = "http://localhost:8080"
 
+    # Shared secret for the orchestration worker → API status callback
+    # (internal, machine-to-machine; not a user-facing credential).
+    internal_api_token: str = ""
+
     # Ecosystem handoff URLs
     blueprint_harvester_url: str = "http://blueprint-harvester-api:8000"
     yantra4d_url: str = "http://yantra4d-api:8000"
