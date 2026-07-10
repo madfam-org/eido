@@ -15,15 +15,3 @@ resources:
 - resource-quota.yaml
 - pdb.yaml
 
-# Digests are pinned by CI (deploy job runs `kustomize edit set image` after
-# each image build on main). `latest` here is only the pre-first-deploy state.
-images:
-- digest: sha256:237522c2d68c5ac50b37b435e98ae2abfd08b3eea197502ec2558a411bddb3d2
-  name: ghcr.io/madfam-org/eido-api
-  newName: ghcr.io/madfam-org/eido-api
-- digest: sha256:719d23d5a438dbe4758a02461994799baec509c3f1826eafa610c8df12a6c6da
-  name: ghcr.io/madfam-org/eido-orchestration
-  newName: ghcr.io/madfam-org/eido-orchestration
-- digest: sha256:06fcc6a58db02ed67ab42a48a1463b895dd436b8b523d6479a9a73825882a930
-  name: ghcr.io/madfam-org/eido-web
-  newName: ghcr.io/madfam-org/eido-web

@@ -3,11 +3,6 @@ name: CI — Build, Test & Deploy
 on:
   push:
     branches: [main]
-    # The digest-pin commit (deploy job) only touches the production
-    # kustomization; skipping it here prevents a build->pin->build loop.
-    # ArgoCD deploys straight from that manifest change.
-    paths-ignore:
-      - "infra/k8s/production/kustomization.yaml"
   pull_request:
     branches: [main]
 
@@ -239,9 +234,11 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.ORG }}/eido-orchestration@${{ steps.push.outputs.digest }}
 
   # ── Deploy (GitOps) ──────────────────────────────────────────────────────────
-  # Pins the three image digests into infra/k8s/production/kustomization.yaml
-  # in ONE commit; ArgoCD (registered by `enclii onboard`) reconciles the
-  # manifests onto the cluster. No ENCLII_TOKEN needed.
+  # Pins the three image digests directly into the deployment manifests in ONE
+  # commit; ArgoCD (registered by `enclii onboard`) reconciles them onto the
+  # cluster. Digests live in the RAW files (not a kustomization images block)
+  # because the Enclii onboarding gate and Kyverno's require-image-digest
+  # policy both inspect raw manifests. No ENCLII_TOKEN needed.
   deploy:
     name: Pin digests (ArgoCD deploys)
     runs-on: ubuntu-latest
@@ -252,27 +249,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install kustomize
-        run: |
-          curl -sL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.6.0/kustomize_v5.6.0_linux_amd64.tar.gz" | tar xz
-          sudo mv kustomize /usr/local/bin/
-
       - name: Commit image digests
         run: |
           git config user.name "madfam-bot"
           git config user.email "bot@madfam.dev"
+          pin() { # pin <file> <image-name> <digest>
+            sed -i -E "s|image: $2[@:][^\"]*|image: $2@$3|" "$1"
+          }
           for ATTEMPT in 1 2 3; do
             git fetch origin main
             git reset --hard origin/main
-            cd infra/k8s/production
-            kustomize edit set image \
-              ghcr.io/${{ env.ORG }}/eido-api=ghcr.io/${{ env.ORG }}/eido-api@${{ needs.build-api.outputs.digest }} \
-              ghcr.io/${{ env.ORG }}/eido-web=ghcr.io/${{ env.ORG }}/eido-web@${{ needs.build-web.outputs.digest }} \
-              ghcr.io/${{ env.ORG }}/eido-orchestration=ghcr.io/${{ env.ORG }}/eido-orchestration@${{ needs.build-orchestration.outputs.digest }}
-            cd ../../..
-            git add infra/k8s/production/kustomization.yaml
+            pin infra/k8s/production/api-deployment.yaml           ghcr.io/${{ env.ORG }}/eido-api           ${{ needs.build-api.outputs.digest }}
+            pin infra/k8s/production/web-deployment.yaml           ghcr.io/${{ env.ORG }}/eido-web           ${{ needs.build-web.outputs.digest }}
+            pin infra/k8s/production/orchestration-deployment.yaml ghcr.io/${{ env.ORG }}/eido-orchestration ${{ needs.build-orchestration.outputs.digest }}
+            git add infra/k8s/production/*-deployment.yaml
             git diff --staged --quiet && echo "No changes to commit" && exit 0
-            git commit -m "deploy: pin image digests to ${GITHUB_SHA::8}"
+            # [skip ci] breaks the build->pin->build loop; ArgoCD deploys
+            # straight from this manifest commit.
+            git commit -m "deploy: pin image digests to ${GITHUB_SHA::8} [skip ci]"
             git push origin main && exit 0
             echo "Retry $ATTEMPT..."
             sleep $((ATTEMPT * 10))
