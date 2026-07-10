@@ -8,10 +8,11 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 
-# Import all models so Alembic sees the metadata
+# Import all models so Alembic sees the metadata.
+# (The tokens router and its APIToken model were deleted in #3; api_tokens
+# was amended out of 001 before any DB ever ran it.)
 from eido_api.models import Base  # noqa: F401
 from eido_api.routers.collections import Collection, collection_captures  # noqa: F401
-from eido_api.routers.tokens import APIToken  # noqa: F401
 
 config = context.config
 if config.config_file_name is not None:

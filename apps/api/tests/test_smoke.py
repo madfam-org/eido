@@ -34,3 +34,24 @@ def test_app_imports_and_has_routes():
     paths = set(app.openapi()["paths"])
     assert "/health" in paths
     assert any(p.startswith("/api/v1/captures") for p in paths)
+
+
+def test_alembic_env_renders_offline():
+    """The container entrypoint runs `alembic upgrade head` before uvicorn,
+    so a broken alembic/env.py is a production crash loop (it kept importing
+    the tokens router deleted in #3 — 50+ restarts before anyone saw a log).
+    Offline SQL rendering exercises env.py and every migration without a DB.
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    api_dir = Path(__file__).resolve().parents[1]
+    env = {**os.environ, "DATABASE_URL": "postgresql+asyncpg://x:x@localhost:5432/x"}
+    res = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head", "--sql"],
+        capture_output=True, text=True, env=env, cwd=api_dir, timeout=120,
+    )
+    assert res.returncode == 0, res.stderr[-2000:]
+    assert "CREATE TABLE captures" in res.stdout
