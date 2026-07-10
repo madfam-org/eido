@@ -8,7 +8,6 @@ from eido_api.routers import (
     jobs,
     search,
     social,
-    tokens,
 )
 
 __all__ = [
@@ -20,5 +19,4 @@ __all__ = [
     "jobs",
     "search",
     "social",
-    "tokens",
 ]

@@ -1,9 +1,9 @@
 # ── Eido Orchestration Worker — Dockerfile ────────────────────────────────────
 # Lightweight dispatcher — runs on CPU only.
 # GPU containers are spawned ephemerally via the Vast.ai / AWS API.
-# python:3.11-slim-bookworm@sha256 — verified 2026-04-30
+# python:3.11-slim-bookworm@sha256 — refreshed 2026-07-10 (old manifest GC'd from Docker Hub)
 
-FROM python:3.11-slim-bookworm@sha256:10fcb9e2a9a4b898e27dcdb36c29b7f8eef01cc4e3c7e2697a94a8c5eded58e8
+FROM python:3.11-slim-bookworm@sha256:f5cf0344c9886ff24d34797578d5d7dd6e8911ae0fe5962bb55d0f89603ec361
 
 RUN addgroup --system --gid 1001 eido && \
     adduser --system --uid 1001 --gid 1001 --no-create-home eido
