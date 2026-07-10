@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 JOB_QUEUE_KEY = "eido:jobs:pending"
 API_URL = os.getenv("EIDO_API_URL", "http://api:8000")
+# Same value as the API's INTERNAL_API_TOKEN; authenticates the status callback.
+INTERNAL_API_TOKEN = os.getenv("INTERNAL_API_TOKEN", "")
 S3_ENDPOINT = os.getenv("S3_ENDPOINT", "http://minio:9000")
 S3_BUCKET_RAW = os.getenv("S3_BUCKET_RAW", "eido-raw")
 S3_BUCKET_CDN = os.getenv("S3_BUCKET_CDN", "eido-cdn")
@@ -60,7 +62,11 @@ async def _update_capture_status(
             "error_message": result.error,
         })
     async with httpx.AsyncClient(timeout=10.0) as client:
-        await client.patch(f"{API_URL}/api/v1/captures/{capture_id}/status", json=payload)
+        await client.patch(
+            f"{API_URL}/api/v1/captures/{capture_id}/status",
+            json=payload,
+            headers={"X-Internal-Token": INTERNAL_API_TOKEN},
+        )
 
 
 def _run_container(image: str, env: dict[str, str], volumes: dict[str, str]) -> subprocess.CompletedProcess:

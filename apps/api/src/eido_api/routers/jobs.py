@@ -9,14 +9,17 @@ import logging
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eido_api.auth import JanuaUser, get_current_user
+from eido_api.config import get_settings
 from eido_api.db.session import get_db
-from eido_api.models import Capture, CaptureStatus
+from eido_api.models import Capture, CaptureStatus, User
+from eido_api.services.provisioning import get_provisioned_user
+
+settings = get_settings()
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -84,7 +87,7 @@ async def get_job_status(
 
 @router.get("/", response_model=list[JobStatusResponse])
 async def list_my_jobs(
-    user: Annotated[JanuaUser, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_provisioned_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=50),
@@ -115,13 +118,24 @@ async def list_my_jobs(
     return results
 
 
-# Internal endpoint — called by orchestration worker (no user auth, internal network only)
+# Internal endpoint — called by the orchestration worker. Guarded by a shared
+# service token (X-Internal-Token) rather than a user session: previously any
+# caller on the network could flip a capture to READY/public and fan out the
+# ecosystem handoffs.
 @router.patch("/captures/{capture_id}/status", include_in_schema=False)
 async def update_capture_status(
     capture_id: UUID,
     data: StatusPatchRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
+    x_internal_token: Annotated[str | None, Header()] = None,
 ) -> dict:
+    expected = settings.internal_api_token
+    if not expected or x_internal_token != expected:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing internal service token.",
+        )
+
     result = await db.execute(select(Capture).where(Capture.id == capture_id))
     capture = result.scalar_one_or_none()
     if not capture:

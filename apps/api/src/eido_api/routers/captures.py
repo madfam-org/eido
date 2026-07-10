@@ -21,7 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from eido_api.config import get_settings
 from eido_api.db.session import get_db
 from eido_api.db.redis import enqueue_job
-from eido_api.models import Capture, CaptureMode, CaptureStatus
+from eido_api.models import Capture, CaptureMode, CaptureStatus, User
+from eido_api.services.provisioning import get_provisioned_user
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -118,6 +119,7 @@ def _capture_to_response(c: Capture) -> CaptureResponse:
 async def ingest_capture(
     data: IngestRequest,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_provisioned_user),
 ) -> IngestResponse:
     """
     Register a new capture and return a pre-signed S3 URL for direct upload.
@@ -129,6 +131,7 @@ async def ingest_capture(
     # Create DB record
     capture = Capture(
         id=capture_id,
+        author_id=user.id,
         title=data.title,
         description=data.description,
         mode=data.mode,
@@ -164,6 +167,7 @@ async def trigger_processing(
     capture_id: str,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_provisioned_user),
 ) -> dict[str, Any]:
     """
     Enqueue a GPU processing job for this capture.
@@ -173,6 +177,8 @@ async def trigger_processing(
     capture = result.scalar_one_or_none()
     if not capture:
         raise HTTPException(status_code=404, detail="Capture not found.")
+    if capture.author_id != user.id:
+        raise HTTPException(status_code=403, detail="Not the capture owner.")
 
     capture.status = CaptureStatus.QUEUED
     await db.flush()
@@ -194,6 +200,7 @@ async def publish_capture(
     capture_id: str,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_provisioned_user),
 ) -> dict[str, Any]:
     """
     Mark a processed capture as public and fire all ecosystem handoff webhooks.
@@ -202,6 +209,8 @@ async def publish_capture(
     capture = result.scalar_one_or_none()
     if not capture:
         raise HTTPException(status_code=404, detail="Capture not found.")
+    if capture.author_id != user.id:
+        raise HTTPException(status_code=403, detail="Not the capture owner.")
     if capture.status != CaptureStatus.READY:
         raise HTTPException(status_code=409, detail=f"Capture is not ready (status: {capture.status}).")
 
