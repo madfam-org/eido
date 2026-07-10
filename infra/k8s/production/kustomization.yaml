@@ -1,0 +1,29 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: eido
+
+resources:
+- namespace.yaml
+- api-deployment.yaml
+- api-service.yaml
+- web-deployment.yaml
+- web-service.yaml
+- orchestration-deployment.yaml
+- redis.yaml
+- network-policies.yaml
+- resource-quota.yaml
+- pdb.yaml
+
+# Digests are pinned by CI (deploy job runs `kustomize edit set image` after
+# each image build on main). `latest` here is only the pre-first-deploy state.
+images:
+- name: ghcr.io/madfam-org/eido-api
+  newName: ghcr.io/madfam-org/eido-api
+  newTag: latest
+- name: ghcr.io/madfam-org/eido-web
+  newName: ghcr.io/madfam-org/eido-web
+  newTag: latest
+- name: ghcr.io/madfam-org/eido-orchestration
+  newName: ghcr.io/madfam-org/eido-orchestration
+  newTag: latest

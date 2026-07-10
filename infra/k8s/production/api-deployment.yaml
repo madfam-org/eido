@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eido-api
+  namespace: eido
+  labels:
+    app: eido-api
+    app.kubernetes.io/part-of: madfam-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: eido-api
+  template:
+    metadata:
+      labels:
+        app: eido-api
+        app.kubernetes.io/part-of: madfam-platform
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: ghcr-credentials
+      containers:
+        - name: api
+          image: ghcr.io/madfam-org/eido-api:latest
+          ports:
+            - containerPort: 8000
+          env:
+            # Force production posture (docs off, HSTS/CSP on) independent of
+            # whatever eido-secrets carries — same fix as factlas H9.
+            - name: EIDO_ENV
+              value: production
+            - name: JANUA_URL
+              value: "https://auth.madfam.io"
+            - name: S3_BUCKET_RAW
+              value: "eido-raw-production"
+            - name: S3_BUCKET_CDN
+              value: "eido-cdn-production"
+            - name: CDN_BASE_URL
+              value: "https://cdn.eido.cam"
+            # Ecosystem handoff URLs (public edges; in-cluster URLs would cross
+            # namespaces the NetworkPolicies do not open).
+            - name: BLUEPRINT_HARVESTER_URL
+              value: "https://api.blueprint.tube"
+            - name: YANTRA4D_URL
+              value: "https://api.yantra4d.io"
+            - name: FACTLAS_URL
+              value: "https://api.factl.as"
+            - name: CEQ_URL
+              value: "https://api.ceq.studio"
+            - name: SELVA_URL
+              value: "https://api.autoswarm.ai"
+            - name: DHANAM_URL
+              value: "https://api.dhanam.madfam.io"
+          envFrom:
+            - secretRef:
+                name: eido-secrets
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: false
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 30

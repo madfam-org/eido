@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eido-orchestration
+  namespace: eido
+  labels:
+    app: eido-orchestration
+    app.kubernetes.io/part-of: madfam-platform
+spec:
+  # Single dispatcher; jobs are serialized off the Redis queue. Scale only
+  # after the pipeline is re-entrant.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eido-orchestration
+  template:
+    metadata:
+      labels:
+        app: eido-orchestration
+        app.kubernetes.io/part-of: madfam-platform
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: ghcr-credentials
+      containers:
+        - name: orchestration
+          image: ghcr.io/madfam-org/eido-orchestration:latest
+          # Pure Redis-queue worker: no HTTP server, so no httpGet probes.
+          # Liveness = can it still reach its queue.
+          env:
+            - name: EIDO_API_URL
+              value: "http://eido-api.eido.svc.cluster.local:80"
+            - name: S3_BUCKET_RAW
+              value: "eido-raw-production"
+            - name: S3_BUCKET_CDN
+              value: "eido-cdn-production"
+            - name: CDN_BASE_URL
+              value: "https://cdn.eido.cam"
+            - name: GPU_PROVIDER
+              value: "vast"
+          envFrom:
+            - secretRef:
+                name: eido-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: false
+          livenessProbe:
+            exec:
+              command:
+                - python3
+                - -c
+                - "import os, redis; redis.from_url(os.environ['REDIS_URL']).ping()"
+            initialDelaySeconds: 15
+            periodSeconds: 60
+            timeoutSeconds: 10

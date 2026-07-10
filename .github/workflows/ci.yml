@@ -3,6 +3,11 @@ name: CI — Build, Test & Deploy
 on:
   push:
     branches: [main]
+    # The digest-pin commit (deploy job) only touches the production
+    # kustomization; skipping it here prevents a build->pin->build loop.
+    # ArgoCD deploys straight from that manifest change.
+    paths-ignore:
+      - "infra/k8s/production/kustomization.yaml"
   pull_request:
     branches: [main]
 
@@ -51,9 +56,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Version comes from package.json "packageManager" — action-setup@v4
+      # errors when both specify a version.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -78,6 +83,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # cosign keyless signing
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
@@ -112,6 +118,18 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # The eido namespace enforces verify-image-signatures (Kyverno);
+      # unsigned images are admission-denied.
+      - name: Sign image with cosign
+        run: |
+          cosign sign --yes \
+            ${{ env.REGISTRY }}/${{ env.ORG }}/eido-api@${{ steps.push.outputs.digest }}
 
   build-web:
     name: Build Web Image
@@ -121,6 +139,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # cosign keyless signing
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
@@ -155,6 +174,16 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with cosign
+        run: |
+          cosign sign --yes \
+            ${{ env.REGISTRY }}/${{ env.ORG }}/eido-web@${{ steps.push.outputs.digest }}
 
   build-orchestration:
     name: Build Orchestration Image
@@ -163,6 +192,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # cosign keyless signing
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
@@ -197,49 +227,68 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
 
-  # ── Deploy via Enclii ────────────────────────────────────────────────────────
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with cosign
+        run: |
+          cosign sign --yes \
+            ${{ env.REGISTRY }}/${{ env.ORG }}/eido-orchestration@${{ steps.push.outputs.digest }}
+
+  # ── Deploy (GitOps) ──────────────────────────────────────────────────────────
+  # Pins the three image digests into infra/k8s/production/kustomization.yaml
+  # in ONE commit; ArgoCD (registered by `enclii onboard`) reconciles the
+  # manifests onto the cluster. No ENCLII_TOKEN needed.
   deploy:
-    name: Deploy to Production
+    name: Pin digests (ArgoCD deploys)
     runs-on: ubuntu-latest
     needs: [build-api, build-web, build-orchestration]
     if: github.ref == 'refs/heads/main'
-    environment: production
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Enclii CLI
-        run: curl -sSL https://get.enclii.dev | bash && echo "$HOME/.enclii/bin" >> $GITHUB_PATH
-
-      - name: Deploy eido-api
-        env:
-          ENCLII_TOKEN: ${{ secrets.ENCLII_TOKEN }}
+      - name: Install kustomize
         run: |
-          enclii deploy eido-api \
-            --env production \
-            --image ghcr.io/${{ env.ORG }}/eido-api@${{ needs.build-api.outputs.digest }} \
-            --wait
+          curl -sL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.6.0/kustomize_v5.6.0_linux_amd64.tar.gz" | tar xz
+          sudo mv kustomize /usr/local/bin/
 
-      - name: Deploy eido-web
-        env:
-          ENCLII_TOKEN: ${{ secrets.ENCLII_TOKEN }}
+      - name: Commit image digests
         run: |
-          enclii deploy eido-web \
-            --env production \
-            --image ghcr.io/${{ env.ORG }}/eido-web@${{ needs.build-web.outputs.digest }} \
-            --wait
+          git config user.name "madfam-bot"
+          git config user.email "bot@madfam.dev"
+          for ATTEMPT in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            cd infra/k8s/production
+            kustomize edit set image \
+              ghcr.io/${{ env.ORG }}/eido-api=ghcr.io/${{ env.ORG }}/eido-api@${{ needs.build-api.outputs.digest }} \
+              ghcr.io/${{ env.ORG }}/eido-web=ghcr.io/${{ env.ORG }}/eido-web@${{ needs.build-web.outputs.digest }} \
+              ghcr.io/${{ env.ORG }}/eido-orchestration=ghcr.io/${{ env.ORG }}/eido-orchestration@${{ needs.build-orchestration.outputs.digest }}
+            cd ../../..
+            git add infra/k8s/production/kustomization.yaml
+            git diff --staged --quiet && echo "No changes to commit" && exit 0
+            git commit -m "deploy: pin image digests to ${GITHUB_SHA::8}"
+            git push origin main && exit 0
+            echo "Retry $ATTEMPT..."
+            sleep $((ATTEMPT * 10))
+          done
+          echo "Failed after 3 attempts"
+          exit 1
 
-      - name: Deploy eido-orchestration
-        env:
-          ENCLII_TOKEN: ${{ secrets.ENCLII_TOKEN }}
+      - name: Smoke test (waits out ArgoCD reconcile + rollout)
         run: |
-          enclii deploy eido-orchestration \
-            --env production \
-            --image ghcr.io/${{ env.ORG }}/eido-orchestration@${{ needs.build-orchestration.outputs.digest }} \
-            --wait
-
-      - name: Smoke test
-        run: |
-          sleep 15
-          curl -sf https://api.eido.cam/health | jq .
-          echo "✅ eido.cam is live"
+          for i in $(seq 1 20); do
+            if curl -sf --max-time 10 https://api.eido.cam/health | jq .; then
+              echo "✅ api.eido.cam is live"
+              exit 0
+            fi
+            echo "not up yet ($i/20) — retrying in 20s"
+            sleep 20
+          done
+          echo "::warning::api.eido.cam did not answer within ~7 min (first deploy: NS propagation or ArgoCD interval may still be settling)"
+          exit 1

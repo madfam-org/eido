@@ -1,0 +1,22 @@
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: eido-api-pdb
+  namespace: eido
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: eido-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: eido-web-pdb
+  namespace: eido
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: eido-web

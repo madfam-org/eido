@@ -1,0 +1,78 @@
+---
+# In-namespace Redis for the job queue. Transient by design (emptyDir, no
+# persistence): a restart drops queued-but-undispatched jobs, which is
+# acceptable pre-alpha and avoids coupling to the shared data-namespace
+# Redis (whose password belongs to another product's secret). Reachable
+# only from eido pods via the default-deny NetworkPolicies.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eido-redis
+  namespace: eido
+  labels:
+    app: eido-redis
+    app.kubernetes.io/part-of: madfam-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eido-redis
+  template:
+    metadata:
+      labels:
+        app: eido-redis
+        app.kubernetes.io/part-of: madfam-platform
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "192mb", "--maxmemory-policy", "noeviction"]
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 30
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: eido-redis
+  namespace: eido
+spec:
+  selector:
+    app: eido-redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+      protocol: TCP
+  type: ClusterIP

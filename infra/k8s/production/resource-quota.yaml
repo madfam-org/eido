@@ -1,0 +1,28 @@
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: eido-quota
+  namespace: eido
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.cpu: "6"
+    limits.memory: 8Gi
+    pods: "15"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: eido-limits
+  namespace: eido
+spec:
+  limits:
+    - default:
+        cpu: 256m
+        memory: 512Mi
+      defaultRequest:
+        cpu: 128m
+        memory: 256Mi
+      type: Container
