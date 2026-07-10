@@ -1,10 +1,9 @@
 "use client";
 
-import { Canvas } from "@react-three/fiber";
-import { OrbitControls, Environment, ContactShadows } from "@react-three/drei";
-import { Suspense, useRef } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useMemo } from "react";
 
 interface Capture {
   id: string;
@@ -20,79 +19,70 @@ interface Capture {
   is_georeferenced: boolean;
 }
 
-interface SplatViewerProps {
-  capture: Capture;
+// Deterministic hue from the capture id — every card gets a distinct, stable
+// poster so the grid looks intentional rather than 24 identical placeholders.
+function hueFromId(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360;
+  return h;
 }
 
-/** Inline 3D splat viewer — loads .glb via R3F for portfolio previews. */
-export function SplatViewer({ capture }: SplatViewerProps) {
+/**
+ * Static poster for the gallery grid.
+ *
+ * IMPORTANT: no WebGL here. The previous card mounted a live R3F <Canvas> per
+ * tile; 24 tiles blew past the browser's ~16 WebGL-context cap and the grid
+ * blanked out. The real splat viewer lives on the capture detail page. Until
+ * the pipeline generates thumbnails, an unprocessed capture shows a deterministic
+ * point-cloud-style gradient — not a spinning torus knot.
+ */
+function PosterFallback({ id, mode }: { id: string; mode: string }) {
+  const hue = useMemo(() => hueFromId(id), [id]);
   return (
-    <div className="w-full aspect-square rounded-xl overflow-hidden bg-[#0d0d18]">
-      <Canvas camera={{ position: [0, 0, 3], fov: 45 }} shadows>
-        <ambientLight intensity={0.4} />
-        <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
-        <Suspense fallback={<FallbackMesh />}>
-          <Environment preset="studio" />
-          <ContactShadows position={[0, -1, 0]} opacity={0.5} blur={2} />
-          {/* In production: replace with <Splat url={capture.splat_url} /> from gsplat */}
-          <PlaceholderGeometry />
-        </Suspense>
-        <OrbitControls
-          enablePan={false}
-          minDistance={1}
-          maxDistance={6}
-          autoRotate
-          autoRotateSpeed={1.5}
-        />
-      </Canvas>
-    </div>
-  );
-}
-
-function FallbackMesh() {
-  return (
-    <mesh>
-      <boxGeometry args={[1, 1, 1]} />
-      <meshStandardMaterial color="#1e293b" wireframe />
-    </mesh>
-  );
-}
-
-function PlaceholderGeometry() {
-  const ref = useRef<any>(null);
-  return (
-    <mesh ref={ref} castShadow>
-      <torusKnotGeometry args={[0.6, 0.2, 128, 32]} />
-      <meshStandardMaterial
-        color="#38bdf8"
-        roughness={0.2}
-        metalness={0.8}
+    <div
+      className="relative w-full aspect-square overflow-hidden"
+      style={{
+        background: `radial-gradient(120% 120% at 30% 20%, hsl(${hue} 70% 22%) 0%, #0b0b14 70%)`,
+      }}
+    >
+      {/* faint point-cloud dot grid — evokes a splat without a GL context */}
+      <div
+        aria-hidden
+        className="absolute inset-0 opacity-40"
+        style={{
+          backgroundImage: `radial-gradient(hsl(${hue} 80% 70% / 0.5) 1px, transparent 1.4px)`,
+          backgroundSize: "14px 14px",
+          maskImage: "radial-gradient(70% 70% at 50% 45%, black 0%, transparent 75%)",
+          WebkitMaskImage: "radial-gradient(70% 70% at 50% 45%, black 0%, transparent 75%)",
+        }}
       />
-    </mesh>
+      <span className="absolute bottom-2.5 left-3 text-[10px] uppercase tracking-widest text-white/45">
+        {mode === "3dgs" ? "Gaussian Splat" : mode}
+      </span>
+    </div>
   );
 }
 
 /** Capture card for the gallery grid. */
 export default function CaptureCard({ capture }: { capture: Capture }) {
+  const router = useRouter();
+
   return (
-    <Link href={`/capture/${capture.id}`}>
-      <motion.div
-        whileHover={{ scale: 1.02, y: -4 }}
-        transition={{ type: "spring", stiffness: 300 }}
-        className="group rounded-xl overflow-hidden border border-white/8 bg-white/3 backdrop-blur cursor-pointer"
-      >
-        {/* Thumbnail or inline viewer */}
+    <motion.div
+      whileHover={{ scale: 1.02, y: -4 }}
+      transition={{ type: "spring", stiffness: 300 }}
+      className="group rounded-xl overflow-hidden border border-white/8 bg-white/3 backdrop-blur"
+    >
+      <Link href={`/capture/${capture.id}`} className="block cursor-pointer">
         {capture.thumbnail_url ? (
           <div
             className="aspect-square bg-cover bg-center"
             style={{ backgroundImage: `url(${capture.thumbnail_url})` }}
           />
         ) : (
-          <SplatViewer capture={capture} />
+          <PosterFallback id={capture.id} mode={capture.mode} />
         )}
-
-        {/* Metadata */}
-        <div className="p-4">
+        <div className="px-4 pt-4">
           <h2 className="font-semibold text-sm text-white truncate group-hover:text-sky-400 transition-colors">
             {capture.title}
           </h2>
@@ -100,29 +90,33 @@ export default function CaptureCard({ capture }: { capture: Capture }) {
             <span className="text-xs text-slate-500 uppercase tracking-wider">
               {capture.mode}
             </span>
-            {capture.gaussian_count && (
+            {capture.gaussian_count ? (
               <span className="text-xs text-slate-600">
                 · {(capture.gaussian_count / 1_000).toFixed(0)}K gaussians
               </span>
-            )}
+            ) : null}
             {capture.is_georeferenced && (
               <span className="ml-auto text-xs text-emerald-400">📍</span>
             )}
           </div>
-          {capture.tags.length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-2">
-              {capture.tags.slice(0, 3).map((tag) => (
-                <span
-                  key={tag}
-                  className="text-[10px] px-2 py-0.5 rounded-full bg-sky-950/50 text-sky-400 border border-sky-800/50"
-                >
-                  {tag}
-                </span>
-              ))}
-            </div>
-          )}
         </div>
-      </motion.div>
-    </Link>
+      </Link>
+
+      {/* Tags are navigable (button, not a nested <a> inside the card Link). */}
+      {capture.tags.length > 0 && (
+        <div className="flex flex-wrap gap-1 px-4 pb-4 pt-2">
+          {capture.tags.slice(0, 3).map((tag) => (
+            <button
+              key={tag}
+              type="button"
+              onClick={() => router.push(`/?tag=${encodeURIComponent(tag)}`)}
+              className="text-[10px] px-2 py-0.5 rounded-full bg-sky-950/50 text-sky-400 border border-sky-800/50 hover:bg-sky-900/60 hover:border-sky-600 transition-colors"
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
+    </motion.div>
   );
 }
