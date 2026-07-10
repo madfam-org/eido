@@ -19,6 +19,7 @@ from sqlalchemy import select
 from eido_api.config import get_settings
 from eido_api.db.session import async_session_maker
 from eido_api.models import Capture, EcosystemHandoff, HandoffTarget
+from eido_api.services.service_auth import auth_headers
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -101,9 +102,13 @@ async def _dispatch_factlas(capture: Capture) -> None:
         "confidence": 0.95,
     }
     url = f"{settings.factlas_url}/api/v1/observations"
+    # Factlas gates writes behind Janua auth (require_user); authenticate this
+    # handoff as an Eido service principal. Falls back to no header when M2M
+    # credentials aren't configured (dispatch then logs the downstream 401).
+    headers = await auth_headers()
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.post(url, json=payload)
+            resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             await _log_handoff(str(capture.id), HandoffTarget.FACTLAS, "accepted", payload)
             logger.info("Handoff → Factlas: OK", extra={"capture_id": str(capture.id)})
