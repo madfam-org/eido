@@ -40,16 +40,14 @@ def test_app_imports_and_has_routes():
 def test_worker_callback_path_matches_a_mounted_route():
     """The orchestration worker PATCHes the capture-status callback; if its path
     doesn't match a mounted route the callback 404s and strands every capture at
-    QUEUED (exactly the bug this guards). The status route lives under the jobs
-    router (prefix /api/v1/jobs), so the worker must target /api/v1/jobs/captures.
+    QUEUED (exactly the bug this guards). Resolve the route's real mounted path by
+    name (starlette flattens included routers, so top-level app.routes doesn't
+    expose it) and assert it's under the jobs prefix — what the worker targets.
     """
     from eido_api.main import app
 
-    status_routes = {
-        r.path for r in app.routes
-        if getattr(r, "path", "").endswith("/captures/{capture_id}/status")
-    }
-    assert "/api/v1/jobs/captures/{capture_id}/status" in status_routes
+    resolved = app.url_path_for("update_capture_status", capture_id="CID")
+    assert resolved == "/api/v1/jobs/captures/CID/status"
 
 
 def test_stage_map_covers_every_processing_status():
