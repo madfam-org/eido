@@ -58,5 +58,9 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Run migrations then start server
-CMD ["sh", "-c", "alembic upgrade head && uvicorn eido_api.main:app --host 0.0.0.0 --port 8000 --workers 2"]
+# Run migrations then start server.
+# --proxy-headers + --forwarded-allow-ips='*' make uvicorn honor the tunnel's
+# X-Forwarded-Proto, so FastAPI's trailing-slash redirects emit https:// (not
+# http://). Without it a redirect to http:// is blocked as mixed content by the
+# browser and the gallery fetch fails even though the API returns 200.
+CMD ["sh", "-c", "alembic upgrade head && uvicorn eido_api.main:app --host 0.0.0.0 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips='*'"]

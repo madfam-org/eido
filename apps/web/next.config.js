@@ -3,6 +3,12 @@ const nextConfig = {
   // Required for Docker production image (standalone output)
   output: "standalone",
 
+  // Don't 308-strip the trailing slash on proxied API paths. The API's
+  // collection routes are canonical WITH the slash (/api/v1/captures/); stripping
+  // it makes the API 307 to add it back — a needless extra hop. Combined with
+  // uvicorn --proxy-headers, the browser now reaches the API in one request.
+  skipTrailingSlashRedirect: true,
+
   images: {
     domains: ["cdn.eido.cam", "localhost"],
   },
