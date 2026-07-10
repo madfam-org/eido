@@ -31,8 +31,11 @@ spec:
           type: RuntimeDefault
       containers:
         - name: redis
-          # redis:7-alpine, digest-pinned (onboarder + supply-chain policy require digests)
-          image: redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+          # redis:7-alpine mirrored into ghcr.io/madfam-org (Kyverno denies
+          # docker.io in app namespaces; namespace enforces cosign signatures —
+          # the CI mirror-redis job pushes + signs). Digest identical to
+          # upstream: mirroring preserves the manifest.
+          image: ghcr.io/madfam-org/eido-redis@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
           args: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "192mb", "--maxmemory-policy", "noeviction"]
           ports:
             - containerPort: 6379

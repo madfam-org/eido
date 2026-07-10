@@ -44,7 +44,7 @@ def upgrade() -> None:
         sa.Column("title", sa.String(255), nullable=False),
         sa.Column("description", sa.Text()),
         sa.Column("mode", sa.Enum("photogrammetry", "lidar", "drone", "3dgs", name="capturemode"), nullable=False, server_default="3dgs"),
-        sa.Column("status", sa.Enum("uploading", "queued", "processing_sfm", "processing_3dgs", "processing_mesh", "ready", "failed", name="capturestatus"), nullable=False, server_default="uploading"),
+        sa.Column("status", sa.Enum("uploading", "queued", "processing_sfm", "processing_3dgs", "processing_mesh", "processing_compress", "ready", "failed", name="capturestatus"), nullable=False, server_default="uploading"),
         sa.Column("splat_url", sa.Text()),
         sa.Column("mesh_url", sa.Text()),
         sa.Column("thumbnail_url", sa.Text()),

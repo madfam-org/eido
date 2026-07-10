@@ -40,6 +40,7 @@ class CaptureStatus(str, enum.Enum):
     PROCESSING_SFM = "processing_sfm"
     PROCESSING_3DGS = "processing_3dgs"
     PROCESSING_MESH = "processing_mesh"
+    PROCESSING_COMPRESS = "processing_compress"
     READY = "ready"
     FAILED = "failed"
 

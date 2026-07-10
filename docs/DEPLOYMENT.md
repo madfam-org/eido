@@ -99,13 +99,24 @@ enclii logs eido-api -f
 
 ## Gaps blocking a working product
 
-Provisioning brings up *shells*. A full-fledged product additionally needs:
+Provisioning brings up *shells*. Remaining product engineering:
 
-1. **Real 3DGS training** — `services/gaussian-splatting` is a stub; wire a real
-   trainer and produce a point cloud.
-2. **`.spz` compression** — the worker uploads `output.spz` that no stage creates,
-   so captures never reach `READY`. This is the single blocker to an end-to-end run.
-3. **Real splat viewer** — the web viewer renders placeholder geometry; wire a
-   `.spz`/gsplat viewer and an upload flow (`/capture/new`).
-4. **Auth on capture mutations + a Janua service token for handoffs** — tracked in
-   the auth PR; the eido→sibling hand-offs need an M2M token.
+1. **Real 3DGS training** — `services/gaussian-splatting` still shells out to a
+   nonexistent `gsplat.train` module; wire a real trainer (gsplat
+   simple_trainer / nerfstudio splatfacto) and produce `point_cloud.ply`.
+   Also: the four pipeline images (`eido/colmap-sfm`, `eido/gaussian-splatting`,
+   `eido/splat-to-mesh`, `eido/spz-compress`) are not published anywhere yet —
+   GHCR publishing + the GPU-host bootstrap that pulls them belong to this
+   work.
+2. ~~`.spz` compression~~ — **done 2026-07-10**: `services/spz-compress`
+   (pure-numpy SPZ v2 encoder, reference-conformance tests) runs as pipeline
+   stage 4; the worker reports `processing_compress` and `gaussian_count`.
+3. ~~Real splat viewer / upload flow~~ — **done 2026-07-10 (MVP)**: the capture
+   page decodes `.spz` in-browser (gzip + v2 layout) and renders the gaussian
+   cloud as colored points, falls back to the reconstructed `.glb`; `/capture/new`
+   uploads via ingest → pre-signed PUT → process. Full gaussian rasterization
+   and web SSO are follow-ups. **Ops prerequisite:** a CORS policy on the
+   `eido-cdn-production` bucket allowing GET from `https://eido.cam`.
+4. **Auth on capture mutations + a Janua service token for handoffs** — the
+   upload page pastes a Janua bearer token until the eido-web OIDC client is
+   registered; the eido→sibling hand-offs need an M2M token.
