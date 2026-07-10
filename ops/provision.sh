@@ -77,15 +77,15 @@ echo "  ✅ eido-api / eido-web / eido-orchestration registered."
 
 # ── Step 3: Managed data stores (own instances — NOT the shared CNPG set) ─────
 echo ""
-echo "Step 3: Postgres + Redis addons"
-echo "  Run once, then wait for ready and fetch credentials:"
-echo "    enclii addon plans"
-echo "    enclii addon create eido-db    --plan <postgres-plan> --project eido"
-echo "    enclii addon create eido-redis --plan <redis-plan>    --project eido"
+echo "Step 3: Postgres addon (Redis runs in-namespace via the manifests)"
+echo "  As-built 2026-07-10: eido-db, plan standard-1, namespace project-0be6ce5e."
+echo "    enclii addon plans      # postgres plans only — no redis plans exist"
+echo "    enclii addon create eido-db --plan standard-1 --project eido"
 echo "    enclii addon ls --project eido"
-echo "  Put the resulting DATABASE_URL / REDIS_URL into ${SECRETS_ENV_FILE}."
-echo "  ⚠️  Then add the addon namespace (project-XXXXXXXX) to"
-echo "      infra/k8s/production/network-policies.yaml egress rules."
+echo "    GET /v1/addons/<id>/credentials   # DATABASE_URL → ${SECRETS_ENV_FILE}"
+echo "  REDIS_URL is redis://eido-redis.eido.svc.cluster.local:6379/0"
+echo "  (infra/k8s/production/redis.yaml — transient queue, no shared-Redis coupling)."
+echo "  ⚠️  The addon namespace must appear in network-policies.yaml egress (it does)."
 
 # ── Step 4: R2 buckets (via switchyard admin endpoint) ────────────────────────
 echo ""

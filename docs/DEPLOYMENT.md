@@ -32,9 +32,10 @@ Two layers, very different states:
 DNS: `eido.cam` is registered at **Porkbun** and delegated to **Cloudflare**
 nameservers (full edge + Tunnel), matching the rest of the ecosystem.
 
-Dependencies: PostgreSQL + Redis (Enclii **addons** — own instances, eido is
-*not* on the shared CNPG set), Cloudflare R2 (two buckets), Janua (OIDC/JWKS),
-Selva (inference), Dhanam (entitlements), Vast.ai (GPU).
+Dependencies: PostgreSQL (Enclii **addon** `eido-db` — own instance, eido is
+*not* on the shared CNPG set), Redis (in-namespace `eido-redis`, transient
+queue — see `infra/k8s/production/redis.yaml`), Cloudflare R2 (two buckets),
+Janua (OIDC/JWKS), Selva (inference), Dhanam (entitlements), Vast.ai (GPU).
 
 ## Deployment model (GitOps)
 
@@ -53,9 +54,12 @@ breaks the build→pin→build loop.
 
 1. Cloudflare zone for `eido.cam` + Porkbun NS delegation (bootstrap, raw API).
 2. `enclii projects create` + `enclii services-sync` (reads `enclii.yaml`).
-3. Postgres + Redis **addons** (`enclii addon create … --project eido`) —
-   credentials go into the secrets env file; the addon namespace must be added
-   to `network-policies.yaml` egress.
+3. Postgres **addon** (`enclii addon create eido-db --plan standard-1
+   --project eido`; as-built namespace `project-0be6ce5e`) — credentials go
+   into the secrets env file; the addon namespace is in
+   `network-policies.yaml` egress. Redis is in-namespace (`redis.yaml`) — no
+   Redis addon plans exist and the shared data-namespace Redis would couple
+   eido to another product's password.
 4. R2 buckets via the switchyard admin endpoint (`POST /v1/admin/provision/r2`);
    the `cdn.eido.cam` custom-domain attach and the R2 S3 token mint are
    dashboard steps (Enclii adapter gap, recorded).

@@ -10,6 +10,7 @@ resources:
 - web-deployment.yaml
 - web-service.yaml
 - orchestration-deployment.yaml
+- redis.yaml
 - network-policies.yaml
 - resource-quota.yaml
 - pdb.yaml
