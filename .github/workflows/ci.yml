@@ -42,6 +42,22 @@ jobs:
       - name: Test
         run: pytest tests/ -v --cov=eido_api --cov-report=term-missing
 
+  test-services:
+    name: Services — SPZ Encoder Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install numpy pytest
+
+      - name: Test spz-compress
+        run: pytest services/spz-compress/tests/ -v
+
   test-web:
     name: Web — Lint & Build Check
     runs-on: ubuntu-latest
@@ -232,6 +248,43 @@ jobs:
         run: |
           cosign sign --yes \
             ${{ env.REGISTRY }}/${{ env.ORG }}/eido-orchestration@${{ steps.push.outputs.digest }}
+
+  # ── Mirror third-party images into ghcr.io/madfam-org ───────────────────────
+  # Kyverno denies docker.io images in application namespaces (admission
+  # webhook validate.kyverno.svc-fail on the eido-redis Deployment) and the
+  # namespace enforces cosign signatures. Mirroring preserves the digest
+  # (same manifest, new repo), so redis.yaml pins the identical sha.
+  mirror-redis:
+    name: Mirror redis to GHCR
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      packages: write
+      id-token: write # cosign keyless signing
+    env:
+      REDIS_DIGEST: sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Mirror + sign (skip if digest already present)
+        run: |
+          TARGET=ghcr.io/${{ env.ORG }}/eido-redis
+          if docker manifest inspect "$TARGET@$REDIS_DIGEST" >/dev/null 2>&1; then
+            echo "already mirrored"
+          else
+            docker pull "redis@$REDIS_DIGEST"
+            docker tag "redis@$REDIS_DIGEST" "$TARGET:7-alpine"
+            docker push "$TARGET:7-alpine"
+          fi
+          cosign sign --yes "$TARGET@$REDIS_DIGEST"
 
   # ── Deploy (GitOps) ──────────────────────────────────────────────────────────
   # Pins the three image digests directly into the deployment manifests in ONE

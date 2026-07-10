@@ -4,9 +4,11 @@ import { Suspense, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls, Environment, Html, useProgress } from "@react-three/drei";
+import { OrbitControls, Environment, Html, useProgress, useGLTF, Center } from "@react-three/drei";
 import { motion, AnimatePresence } from "framer-motion";
 import useSWR from "swr";
+
+import SpzPoints, { useSpz } from "@/components/SpzPoints";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -28,17 +30,48 @@ function Loader() {
   );
 }
 
-function Scene({ meshUrl }: { meshUrl: string }) {
+function MeshModel({ url }: { url: string }) {
+  const { scene } = useGLTF(url);
+  return (
+    <Center>
+      <primitive object={scene} />
+    </Center>
+  );
+}
+
+function SplatCloud({ url }: { url: string }) {
+  const { cloud, error } = useSpz(url);
+  if (error) {
+    return (
+      <Html center>
+        <p className="text-xs text-rose-400 whitespace-nowrap">Splat load failed: {error}</p>
+      </Html>
+    );
+  }
+  if (!cloud) return <Loader />;
+  return <SpzPoints cloud={cloud} />;
+}
+
+function Scene({ meshUrl, splatUrl }: { meshUrl: string; splatUrl: string }) {
   return (
     <>
       <ambientLight intensity={0.5} />
       <directionalLight position={[5, 10, 5]} intensity={1.5} castShadow />
       <Environment preset="studio" />
-      {/* Placeholder geometry until .spz viewer lib is wired */}
-      <mesh castShadow receiveShadow>
-        <torusKnotGeometry args={[0.8, 0.25, 200, 32]} />
-        <meshStandardMaterial color="#38bdf8" roughness={0.1} metalness={0.9} />
-      </mesh>
+      {/* Real artifacts: prefer the .spz gaussian cloud, fall back to the
+          reconstructed mesh. No placeholder geometry — an empty state is
+          more honest than a torus knot. */}
+      {splatUrl ? (
+        <SplatCloud url={splatUrl} />
+      ) : meshUrl ? (
+        <MeshModel url={meshUrl} />
+      ) : (
+        <Html center>
+          <p className="text-xs text-slate-500 whitespace-nowrap">
+            No 3D artifacts yet — capture is still processing.
+          </p>
+        </Html>
+      )}
       <OrbitControls
         enableDamping
         dampingFactor={0.05}
@@ -128,7 +161,7 @@ export default function CapturePage() {
             shadows
           >
             <Suspense fallback={<Loader />}>
-              <Scene meshUrl={capture.mesh_url || ""} />
+              <Scene meshUrl={capture.mesh_url || ""} splatUrl={capture.splat_url || ""} />
             </Suspense>
           </Canvas>
 

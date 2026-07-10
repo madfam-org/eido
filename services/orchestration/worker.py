@@ -69,9 +69,13 @@ async def _update_capture_status(
         )
 
 
-def _run_container(image: str, env: dict[str, str], volumes: dict[str, str]) -> subprocess.CompletedProcess:
+def _run_container(
+    image: str, env: dict[str, str], volumes: dict[str, str], gpus: bool = True
+) -> subprocess.CompletedProcess:
     """Run an ephemeral Docker container for a pipeline stage."""
-    cmd = ["docker", "run", "--rm", "--gpus", "all"]
+    cmd = ["docker", "run", "--rm"]
+    if gpus:
+        cmd += ["--gpus", "all"]
     for k, v in env.items():
         cmd += ["-e", f"{k}={v}"]
     for host, container in volumes.items():
@@ -120,7 +124,29 @@ async def _run_pipeline(job: dict[str, Any]) -> PipelineResult:
     if mesh_result.returncode != 0:
         return PipelineResult(error=f"Mesh conversion failed: {mesh_result.stderr[:500]}")
 
-    # Stage 4: Upload artifacts to S3 CDN
+    # Stage 4: .spz compression (point_cloud.ply → output.spz, CPU-only)
+    await _update_capture_status(capture_id, "processing_compress")
+    compress_result = _run_container(
+        image="eido/spz-compress:latest",
+        env={
+            "INPUT_PLY": "/work/splat/point_cloud.ply",
+            "OUTPUT_SPZ": "/work/splat/output.spz",
+            "META_JSON": "/work/splat/compress-meta.json",
+        },
+        volumes={work_dir: "/work"},
+        gpus=False,
+    )
+    if compress_result.returncode != 0:
+        return PipelineResult(error=f"SPZ compression failed: {compress_result.stderr[:500]}")
+
+    gaussian_count = None
+    try:
+        with open(f"{work_dir}/splat/compress-meta.json") as f:
+            gaussian_count = json.load(f).get("gaussian_count")
+    except (OSError, ValueError):
+        logger.warning("compress-meta.json missing for %s; gaussian_count unknown", capture_id)
+
+    # Stage 5: Upload artifacts to S3 CDN
     s3 = boto3.client("s3", endpoint_url=S3_ENDPOINT, region_name="us-east-1")
 
     def _upload(local: str, key: str) -> str:
@@ -134,6 +160,7 @@ async def _run_pipeline(job: dict[str, Any]) -> PipelineResult:
     return PipelineResult(
         splat_url=splat_url,
         mesh_url=mesh_url,
+        gaussian_count=gaussian_count,
         processing_time_s=round(elapsed, 1),
     )
 
