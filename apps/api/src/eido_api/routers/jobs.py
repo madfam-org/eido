@@ -54,7 +54,8 @@ _STATUS_STAGE_MAP = {
     CaptureStatus.QUEUED: ("Queued for processing", 10),
     CaptureStatus.PROCESSING_SFM: ("Structure-from-Motion alignment", 30),
     CaptureStatus.PROCESSING_3DGS: ("3D Gaussian Splatting (30k iterations)", 60),
-    CaptureStatus.PROCESSING_MESH: ("Splat-to-mesh conversion", 85),
+    CaptureStatus.PROCESSING_MESH: ("Splat-to-mesh conversion", 82),
+    CaptureStatus.PROCESSING_COMPRESS: ("Compressing to .spz", 92),
     CaptureStatus.READY: ("Complete", 100),
     CaptureStatus.FAILED: ("Failed", None),
 }

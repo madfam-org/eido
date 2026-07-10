@@ -62,11 +62,15 @@ async def _update_capture_status(
             "error_message": result.error,
         })
     async with httpx.AsyncClient(timeout=10.0) as client:
-        await client.patch(
-            f"{API_URL}/api/v1/captures/{capture_id}/status",
+        # Route is mounted under the jobs router (prefix /api/v1/jobs), so the
+        # callback path is /api/v1/jobs/captures/... — NOT /api/v1/captures/...
+        # (that 404s and silently stranded every capture at QUEUED).
+        resp = await client.patch(
+            f"{API_URL}/api/v1/jobs/captures/{capture_id}/status",
             json=payload,
             headers={"X-Internal-Token": INTERNAL_API_TOKEN},
         )
+        resp.raise_for_status()
 
 
 def _run_container(

@@ -33,7 +33,33 @@ def test_app_imports_and_has_routes():
     # routers lazily) and needs no lifespan, DB, or Redis.
     paths = set(app.openapi()["paths"])
     assert "/health" in paths
+    assert "/readyz" in paths
     assert any(p.startswith("/api/v1/captures") for p in paths)
+
+
+def test_worker_callback_path_matches_a_mounted_route():
+    """The orchestration worker PATCHes the capture-status callback; if its path
+    doesn't match a mounted route the callback 404s and strands every capture at
+    QUEUED (exactly the bug this guards). The status route lives under the jobs
+    router (prefix /api/v1/jobs), so the worker must target /api/v1/jobs/captures.
+    """
+    from eido_api.main import app
+
+    status_routes = {
+        r.path for r in app.routes
+        if getattr(r, "path", "").endswith("/captures/{capture_id}/status")
+    }
+    assert "/api/v1/jobs/captures/{capture_id}/status" in status_routes
+
+
+def test_stage_map_covers_every_processing_status():
+    """Every PROCESSING_* status must have a progress-panel entry, or the UI
+    shows 'Unknown' mid-pipeline (the compress stage was missing)."""
+    from eido_api.models import CaptureStatus
+    from eido_api.routers.jobs import _STATUS_STAGE_MAP
+
+    for st in CaptureStatus:
+        assert st in _STATUS_STAGE_MAP, f"{st} missing from _STATUS_STAGE_MAP"
 
 
 def test_alembic_env_renders_offline():

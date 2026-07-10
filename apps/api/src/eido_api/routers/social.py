@@ -21,9 +21,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eido_api.auth import JanuaUser, get_current_user
 from eido_api.db.session import get_db
-from eido_api.models import Capture, SocialEdge, SpatialAnnotation
+from eido_api.models import Capture, SocialEdge, SpatialAnnotation, User
+from eido_api.services.provisioning import get_provisioned_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -73,7 +73,7 @@ class AnnotationResponse(BaseModel):
 @router.post("/captures/{capture_id}/like", response_model=LikeResponse)
 async def toggle_like(
     capture_id: UUID,
-    user: Annotated[JanuaUser, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_provisioned_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> LikeResponse:
     """Toggle like on a capture. Idempotent — call again to unlike."""
@@ -114,11 +114,11 @@ async def toggle_like(
 @router.post("/users/{target_user_id}/follow", response_model=FollowResponse)
 async def toggle_follow(
     target_user_id: UUID,
-    user: Annotated[JanuaUser, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_provisioned_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> FollowResponse:
     """Toggle follow on a user profile. Idempotent."""
-    if str(target_user_id) == user.id:
+    if str(target_user_id) == str(user.id):
         raise HTTPException(status_code=400, detail="You cannot follow yourself.")
 
     existing = await db.execute(
@@ -146,7 +146,7 @@ async def toggle_follow(
 async def post_comment(
     capture_id: UUID,
     data: CommentCreate,
-    user: Annotated[JanuaUser, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_provisioned_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> CommentResponse:
     from datetime import UTC, datetime
@@ -208,7 +208,7 @@ async def list_comments(
 async def post_annotation(
     capture_id: UUID,
     data: AnnotationCreate,
-    user: Annotated[JanuaUser, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_provisioned_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AnnotationResponse:
     """Pin a text annotation to a 3D coordinate on a capture."""
