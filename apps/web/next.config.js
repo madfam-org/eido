@@ -8,10 +8,14 @@ const nextConfig = {
   },
 
   async rewrites() {
+    // Fallback keeps builds working when the env is absent (the Docker image
+    // bakes the real value). Served afterFiles, so the app's own
+    // /api/health route handler wins over this proxy.
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "https://api.eido.cam";
     return [
       {
         source: "/api/:path*",
-        destination: `${process.env.NEXT_PUBLIC_API_URL}/api/:path*`,
+        destination: `${apiUrl}/api/:path*`,
       },
     ];
   },
