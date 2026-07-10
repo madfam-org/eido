@@ -16,7 +16,7 @@ from fastapi import Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eido_api.auth import JanuaUser, get_current_user
+from eido_api.auth import JanuaUser, get_current_user, get_optional_user
 from eido_api.db.session import get_db
 from eido_api.models import User
 
@@ -48,4 +48,19 @@ async def get_provisioned_user(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
     """FastAPI dependency: verified Janua token → local ``User`` row."""
+    return await get_or_create_user(db, janua)
+
+
+async def get_optional_provisioned_user(
+    janua: Annotated[JanuaUser | None, Depends(get_optional_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> User | None:
+    """Optional variant: local ``User`` when a valid token is present, else None.
+
+    Owner checks on mixed public/private endpoints must compare local UUIDs, not
+    the Janua ``sub`` — comparing ``capture.author_id`` (a ``users.id`` FK) to the
+    Janua ``sub`` string 403'd the real owner from their own private capture.
+    """
+    if janua is None:
+        return None
     return await get_or_create_user(db, janua)

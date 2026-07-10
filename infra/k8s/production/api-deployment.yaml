@@ -80,9 +80,12 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
             failureThreshold: 30
+          # Readiness is deep (DB + Redis) so a pod that loses its datastore is
+          # pulled from rotation instead of serving 500s. Liveness stays shallow
+          # on /health — a DB blip must not kill the process mid-transaction.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /readyz
               port: 8000
             periodSeconds: 10
           livenessProbe:

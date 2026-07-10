@@ -15,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eido_api.auth import JanuaUser, get_current_user
 from eido_api.db.session import get_db
-from eido_api.models import Capture, EcosystemHandoff, HandoffTarget
+from eido_api.models import Capture, EcosystemHandoff, HandoffTarget, User
+from eido_api.services.provisioning import get_provisioned_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -37,7 +38,8 @@ class RetryRequest(BaseModel):
 @router.get("/{capture_id}", response_model=list[HandoffSummary])
 async def list_handoffs(
     capture_id: UUID,
-    user: Annotated[JanuaUser, Depends(get_current_user)],
+    owner: Annotated[User, Depends(get_provisioned_user)],
+    janua: Annotated[JanuaUser, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[HandoffSummary]:
     """List all ecosystem dispatch records for a capture (owner only)."""
@@ -45,7 +47,7 @@ async def list_handoffs(
     capture = capture_result.scalar_one_or_none()
     if not capture:
         raise HTTPException(status_code=404, detail="Capture not found.")
-    if str(capture.author_id) != user.id and "admin" not in user.roles:
+    if str(capture.author_id) != str(owner.id) and "admin" not in janua.roles:
         raise HTTPException(status_code=403, detail="Not the capture owner.")
 
     result = await db.execute(
@@ -72,7 +74,8 @@ async def retry_handoff(
     capture_id: UUID,
     data: RetryRequest,
     background_tasks: BackgroundTasks,
-    user: Annotated[JanuaUser, Depends(get_current_user)],
+    owner: Annotated[User, Depends(get_provisioned_user)],
+    janua: Annotated[JanuaUser, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Manually re-dispatch a failed ecosystem handoff."""
@@ -80,7 +83,7 @@ async def retry_handoff(
     capture = capture_result.scalar_one_or_none()
     if not capture:
         raise HTTPException(status_code=404, detail="Capture not found.")
-    if str(capture.author_id) != user.id and "admin" not in user.roles:
+    if str(capture.author_id) != str(owner.id) and "admin" not in janua.roles:
         raise HTTPException(status_code=403, detail="Not the capture owner.")
 
     from eido_api.services.handoff import (

@@ -17,10 +17,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eido_api.auth import JanuaUser, get_optional_user
 from eido_api.config import get_settings
 from eido_api.db.session import get_db
-from eido_api.models import Capture, CaptureStatus
+from eido_api.models import Capture, CaptureStatus, User
+from eido_api.services.provisioning import get_optional_provisioned_user
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -73,7 +73,7 @@ async def get_download_url(
     capture_id: UUID,
     format: str = Query("glb", description="Export format: glb|obj|usdz|ply|spz"),
     db: Annotated[AsyncSession, Depends(get_db)] = None,
-    user: JanuaUser | None = Depends(get_optional_user),
+    user: User | None = Depends(get_optional_provisioned_user),
 ) -> DownloadResponse:
     """
     Return a pre-signed download URL for the specified format.
@@ -87,7 +87,7 @@ async def get_download_url(
     capture = result.scalar_one_or_none()
     if not capture:
         raise HTTPException(status_code=404, detail="Capture not found.")
-    if not capture.is_public and (not user or str(capture.author_id) != user.id):
+    if not capture.is_public and (not user or str(capture.author_id) != str(user.id)):
         raise HTTPException(status_code=403, detail="Private capture — authentication required.")
     if capture.status != CaptureStatus.READY:
         raise HTTPException(status_code=409, detail="Capture is still processing.")

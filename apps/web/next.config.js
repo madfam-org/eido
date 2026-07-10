@@ -38,7 +38,10 @@ const nextConfig = {
               "font-src 'self' https://fonts.gstatic.com",
               "img-src 'self' data: blob: https://cdn.eido.cam",
               "media-src 'self' blob: https://cdn.eido.cam",
-              "connect-src 'self' https://api.eido.cam https://cdn.eido.cam wss://api.eido.cam",
+              // R2 S3 origin is needed for the browser's presigned PUT (upload)
+              // and GET (splat fetch) — without it the upload silently fails the
+              // moment R2 goes live.
+              "connect-src 'self' https://api.eido.cam https://cdn.eido.cam wss://api.eido.cam https://*.r2.cloudflarestorage.com",
               "worker-src blob:",
               "frame-ancestors 'self'",
             ].join("; "),
