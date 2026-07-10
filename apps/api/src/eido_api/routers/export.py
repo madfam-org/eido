@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eido_api.auth import JanuaUser, get_current_user, get_optional_user
+from eido_api.auth import JanuaUser, get_optional_user
 from eido_api.config import get_settings
 from eido_api.db.session import get_db
 from eido_api.models import Capture, CaptureStatus
@@ -107,7 +107,7 @@ async def get_download_url(
         download_url = _presign_get(cdn_key)
     except Exception as e:
         logger.error("Failed to generate download URL: %s", e)
-        raise HTTPException(status_code=503, detail="Storage service unavailable.")
+        raise HTTPException(status_code=503, detail="Storage service unavailable.") from e
 
     return DownloadResponse(
         capture_id=str(capture_id),

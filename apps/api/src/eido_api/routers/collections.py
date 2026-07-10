@@ -17,7 +17,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import Column, DateTime, ForeignKey, String, Table, Text, Boolean, func, select
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Table, Text, func, select
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncSession
 

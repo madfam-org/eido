@@ -13,15 +13,21 @@ Tables:
 """
 
 import enum
-from datetime import datetime
-from typing import Optional
-from uuid import UUID
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Enum, Float, ForeignKey,
-    Integer, String, Text, UniqueConstraint,
+    Boolean,
+    Column,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID as PGUUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 

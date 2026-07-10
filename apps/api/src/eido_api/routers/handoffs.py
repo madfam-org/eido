@@ -84,7 +84,9 @@ async def retry_handoff(
         raise HTTPException(status_code=403, detail="Not the capture owner.")
 
     from eido_api.services.handoff import (
-        _dispatch_blueprint_harvester, _dispatch_ceq, _dispatch_factlas,
+        _dispatch_blueprint_harvester,
+        _dispatch_ceq,
+        _dispatch_factlas,
     )
 
     dispatcher_map = {

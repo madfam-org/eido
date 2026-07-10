@@ -8,7 +8,6 @@ GET  /api/v1/captures/{id}     — single capture detail
 """
 import logging
 import uuid
-from datetime import datetime, UTC
 from typing import Any
 
 import boto3
@@ -19,8 +18,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eido_api.config import get_settings
-from eido_api.db.session import get_db
 from eido_api.db.redis import enqueue_job
+from eido_api.db.session import get_db
 from eido_api.models import Capture, CaptureMode, CaptureStatus, User
 from eido_api.services.provisioning import get_provisioned_user
 
@@ -152,7 +151,7 @@ async def ingest_capture(
         upload_url = _presign_put(s3_key)
     except Exception as e:
         logger.error("Failed to generate pre-signed URL: %s", e)
-        raise HTTPException(status_code=503, detail="Storage service unavailable.")
+        raise HTTPException(status_code=503, detail="Storage service unavailable.") from e
 
     logger.info("Capture registered", extra={"capture_id": str(capture_id), "mode": data.mode})
     return IngestResponse(
