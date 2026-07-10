@@ -141,26 +141,11 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("collection_id", "capture_id"),
     )
 
-    # ── api_tokens ─────────────────────────────────────────────────────────────
-    op.create_table(
-        "api_tokens",
-        sa.Column("id", postgresql.UUID(as_uuid=True), server_default=sa.text("gen_random_uuid()"), nullable=False),
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("name", sa.String(255), nullable=False),
-        sa.Column("token_hash", sa.String(64), nullable=False),
-        sa.Column("prefix", sa.String(12), nullable=False),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
-        sa.Column("last_used_at", sa.DateTime(timezone=True)),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("expires_at", sa.DateTime(timezone=True)),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("token_hash"),
-    )
-    op.create_index("ix_api_tokens_user_id", "api_tokens", ["user_id"])
+    # (api_tokens was removed with the self-issued token system in #3 —
+    # amended out of this migration before any database ever ran it)
 
 
 def downgrade() -> None:
-    op.drop_table("api_tokens")
     op.drop_table("collection_captures")
     op.drop_table("collections")
     op.drop_table("ecosystem_handoffs")
