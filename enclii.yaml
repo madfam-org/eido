@@ -2,7 +2,7 @@ apiVersion: enclii.dev/v1
 kind: Service
 metadata:
   name: eido-api
-  project: madfam-platform
+  project: eido
   description: "Eido API — Reality Capture Ingest, 3DGS Orchestration & Ecosystem Handoffs"
 
 spec:
@@ -124,7 +124,7 @@ apiVersion: enclii.dev/v1
 kind: Service
 metadata:
   name: eido-web
-  project: madfam-platform
+  project: eido
   description: "Eido Web — Next.js WebGL Portfolio Gallery"
 
 spec:
@@ -186,7 +186,7 @@ apiVersion: enclii.dev/v1
 kind: Service
 metadata:
   name: eido-orchestration
-  project: madfam-platform
+  project: eido
   description: "Eido GPU Orchestration Worker — 3DGS Pipeline Dispatcher"
 
 spec:
@@ -201,7 +201,8 @@ spec:
         autoDeploy: true
 
   runtime:
-    port: 8001
+    # Pure Redis-queue worker — no HTTP server, so no port/healthCheck.
+    # Liveness is an exec probe (redis ping) in the K8s manifest.
     replicas: 1
     resources:
       requests:
@@ -210,7 +211,6 @@ spec:
       limits:
         cpu: "500m"
         memory: "512Mi"
-    healthCheck: /health
 
   env:
     - name: REDIS_URL

@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eido-web
+  namespace: eido
+  labels:
+    app: eido-web
+    app.kubernetes.io/part-of: madfam-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: eido-web
+  template:
+    metadata:
+      labels:
+        app: eido-web
+        app.kubernetes.io/part-of: madfam-platform
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: ghcr-credentials
+      containers:
+        - name: web
+          image: ghcr.io/madfam-org/eido-web:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: production
+            # NEXT_PUBLIC_* are baked into the bundle at image build time
+            # (see apps/web/Dockerfile); nothing secret is needed here yet.
+            # janua-client-secret joins via eido-secrets when the web
+            # auth-code flow lands.
+          envFrom:
+            - secretRef:
+                name: eido-secrets
+                optional: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: false
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            periodSeconds: 30

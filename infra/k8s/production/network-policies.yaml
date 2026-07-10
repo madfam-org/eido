@@ -1,0 +1,151 @@
+---
+# Default deny all ingress and egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: eido
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: madfam-platform
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Allow ingress from cloudflare-tunnel namespace
+# eido.cam     -> eido-web (next standalone, 3000)
+# api.eido.cam -> eido-api (uvicorn, 8000)
+# (cdn.eido.cam is an R2 custom domain — never reaches the cluster)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-cloudflared-ingress
+  namespace: eido
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: madfam-platform
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cloudflare-tunnel
+          podSelector:
+            matchLabels:
+              app: cloudflared
+      ports:
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 3000
+---
+# Allow egress to data namespace (redis 6379; pgbouncer 6432/postgres 5432 kept
+# open for the addon/shared fallback)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-data-egress
+  namespace: eido
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: madfam-platform
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: data
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 6432
+---
+# Allow egress to the eido addon Postgres (lives in the enclii-addons
+# namespace when provisioned via `enclii addon create`)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-addon-postgres-egress
+  namespace: eido
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: madfam-platform
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: enclii-addons
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+# Allow egress to DNS (kube-system port 53 UDP/TCP)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: eido
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: madfam-platform
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Allow egress to HTTPS (443): R2, Vast.ai, auth.madfam.io, ecosystem APIs
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-https-egress
+  namespace: eido
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: madfam-platform
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 443
+---
+# Allow intra-namespace communication (orchestration -> api callback)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace
+  namespace: eido
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: madfam-platform
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+  egress:
+    - to:
+        - podSelector: {}
