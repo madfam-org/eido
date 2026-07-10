@@ -8,7 +8,7 @@ RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
 # ── Deps stage ────────────────────────────────────────────────────────────────
 FROM base AS deps
 WORKDIR /app
-COPY package.json pnpm-workspace.yaml ./
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/web/package.json ./apps/web/
 RUN pnpm install --frozen-lockfile --filter @eido/web
 
@@ -31,8 +31,9 @@ RUN pnpm build
 # ── Runner stage ──────────────────────────────────────────────────────────────
 FROM node:20-alpine@sha256:2d07db07a2df6830718ae2a47db6fedce6745f5bcd174c398f2acdda90a11c03 AS runner
 
-RUN addgroup --system --gid 1001 eido && \
-    adduser --system --uid 1001 --gid 1001 eido
+# busybox (alpine) syntax — Debian-style long options exit 1 here
+RUN addgroup -S -g 1001 eido && \
+    adduser -S -u 1001 -G eido eido
 
 WORKDIR /app
 

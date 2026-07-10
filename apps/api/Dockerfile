@@ -1,9 +1,9 @@
 # ── Eido API — Production Dockerfile ──────────────────────────────────────────
 # Multi-stage build: builder installs deps, runner is minimal.
 # Base images are SHA-pinned for Kyverno policy compliance.
-# python:3.11-slim-bookworm@sha256 — verified 2026-04-30
+# python:3.11-slim-bookworm@sha256 — refreshed 2026-07-10 (old manifest GC'd from Docker Hub)
 
-FROM python:3.11-slim-bookworm@sha256:10fcb9e2a9a4b898e27dcdb36c29b7f8eef01cc4e3c7e2697a94a8c5eded58e8 AS builder
+FROM python:3.11-slim-bookworm@sha256:f5cf0344c9886ff24d34797578d5d7dd6e8911ae0fe5962bb55d0f89603ec361 AS builder
 
 WORKDIR /build
 
@@ -25,7 +25,7 @@ RUN pip install --no-cache-dir --prefix=/install hatchling && \
 COPY src/ ./src/
 
 # ── Runner stage ───────────────────────────────────────────────────────────────
-FROM python:3.11-slim-bookworm@sha256:10fcb9e2a9a4b898e27dcdb36c29b7f8eef01cc4e3c7e2697a94a8c5eded58e8 AS runner
+FROM python:3.11-slim-bookworm@sha256:f5cf0344c9886ff24d34797578d5d7dd6e8911ae0fe5962bb55d0f89603ec361 AS runner
 
 # Non-root user — security hardening
 RUN addgroup --system --gid 1001 eido && \
