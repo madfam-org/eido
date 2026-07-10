@@ -23,6 +23,14 @@ class Settings(BaseSettings):
 
     janua_url: str = "http://localhost:8080"
 
+    # Janua M2M service identity (OAuth2 client-credentials). Lets Eido
+    # authenticate its outbound handoffs to Janua-protected siblings — Factlas
+    # requires a valid bearer on POST /observations. When unset, handoffs post
+    # unauthenticated (the previous behaviour), so this degrades gracefully.
+    janua_client_id: str = ""
+    janua_client_secret: str = ""
+    janua_token_url: str = ""  # optional override; else resolved via OIDC discovery
+
     # Shared secret for the orchestration worker → API status callback
     # (internal, machine-to-machine; not a user-facing credential).
     internal_api_token: str = ""
