@@ -1,0 +1,76 @@
+{
+  "contract": "madfam.geo.observation",
+  "version": 1,
+  "canonical": "madfam-org/internal-devops/contracts/observation.v1.json",
+  "description": "Cross-repo contract for the georeferenced observation envelope POSTed to Factlas at POST /api/v1/observations. Producers (e.g. Eido capture handoffs) must emit exactly this shape; Factlas validates it as ObservationCreate. Changing this file is a cross-repo act: update the canonical copy and BOTH vendored copies in the same change set. Additive fields stay within v1; bump version only for breaking shape changes.",
+  "endpoint": "POST https://api.factl.as/api/v1/observations",
+  "auth": "Janua bearer (RS256, verified via JWKS). Service principals authenticate with an OAuth2 client_credentials token — Factlas require_user accepts any valid Janua token with a sub.",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://contracts.madfam.io/geo/observation.v1.json",
+    "title": "ObservationCreate",
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["lat", "lon", "type"],
+    "properties": {
+      "lat": {
+        "type": "number",
+        "minimum": -90,
+        "maximum": 90,
+        "description": "Latitude in decimal degrees (WGS84)"
+      },
+      "lon": {
+        "type": "number",
+        "minimum": -180,
+        "maximum": 180,
+        "description": "Longitude in decimal degrees (WGS84)"
+      },
+      "type": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Observation type, e.g. 'drone_capture', 'warehouse', 'logistics_hub'"
+      },
+      "properties": {
+        "type": ["object", "null"],
+        "default": {},
+        "description": "Free-form metadata (producer-specific; e.g. eido_id, mesh_url, title, altitude_m)"
+      },
+      "confidence": {
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "default": 1.0,
+        "description": "Producer confidence in the observation"
+      },
+      "provider": {
+        "type": "string",
+        "default": "api_user",
+        "description": "Data provider identifier, e.g. 'eido'"
+      }
+    }
+  },
+  "examples": [
+    {
+      "lat": 19.4326,
+      "lon": -99.1332,
+      "type": "drone_capture",
+      "properties": {
+        "eido_id": "3f9c…",
+        "title": "Zócalo aerial",
+        "mesh_url": "https://cdn.eido.cam/…/mesh.spz",
+        "altitude_m": 120
+      },
+      "provider": "eido",
+      "confidence": 0.95
+    }
+  ],
+  "vendored_copies": {
+    "madfam-org/factlas": "apps/api/schemas.py — ObservationCreate (the validating consumer)",
+    "madfam-org/eido": "apps/api/src/eido_api/services/handoff.py — _dispatch_factlas payload (the producer)"
+  },
+  "notes": {
+    "additionalProperties": "Set to false as the canonical target. Factlas's current Pydantic ObservationCreate IGNORES unknown top-level fields rather than rejecting them, so producers must not rely on extra fields carrying through — nest producer-specific data under `properties`.",
+    "provider": "Eido emits provider='eido'; Factlas's own default is 'api_user'.",
+    "h3": "Factlas derives observation.h3_8 server-side (real H3, app-layer) from lat/lon — producers do NOT send it (factlas#16)."
+  }
+}
