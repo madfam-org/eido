@@ -280,9 +280,11 @@ jobs:
           if docker manifest inspect "$TARGET@$REDIS_DIGEST" >/dev/null 2>&1; then
             echo "already mirrored"
           else
-            docker pull "redis@$REDIS_DIGEST"
-            docker tag "redis@$REDIS_DIGEST" "$TARGET:7-alpine"
-            docker push "$TARGET:7-alpine"
+            # imagetools create copies the whole multi-arch INDEX, preserving
+            # its digest. A plain pull@digest + tag + push dereferences to a
+            # single-platform manifest (different sha), so the cluster got
+            # NotFound for the index digest the deployment pins.
+            docker buildx imagetools create --tag "$TARGET:7-alpine" "redis@$REDIS_DIGEST"
           fi
           cosign sign --yes "$TARGET@$REDIS_DIGEST"
 
