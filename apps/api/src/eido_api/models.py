@@ -59,6 +59,22 @@ class HandoffTarget(str, enum.Enum):
     CEQ = "ceq"
 
 
+def _pg_enum(enum_cls: type[enum.Enum]) -> Enum:
+    """PostgreSQL enum column bound by member VALUE, not NAME.
+
+    The migrations created these Postgres enum types with the lowercase member
+    *values* ("ready", "3dgs", …). SQLAlchemy's ``Enum`` binds the member *name*
+    ("READY") by default, so every status/mode query raised
+    ``invalid input value for enum … "READY"`` and 500'd (the gallery filters on
+    status=READY). ``values_callable`` aligns runtime binding to the DB labels.
+    """
+    return Enum(
+        enum_cls,
+        name=enum_cls.__name__.lower(),
+        values_callable=lambda obj: [e.value for e in obj],
+    )
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -86,8 +102,8 @@ class Capture(Base):
 
     title = Column(String(255), nullable=False)
     description = Column(Text)
-    mode = Column(Enum(CaptureMode), nullable=False, server_default=CaptureMode.GAUSSIAN_SPLATTING)
-    status = Column(Enum(CaptureStatus), nullable=False, server_default=CaptureStatus.UPLOADING)
+    mode = Column(_pg_enum(CaptureMode), nullable=False, server_default=CaptureMode.GAUSSIAN_SPLATTING.value)
+    status = Column(_pg_enum(CaptureStatus), nullable=False, server_default=CaptureStatus.UPLOADING.value)
 
     # Output files (CDN URLs)
     splat_url = Column(Text)         # .spz compressed splat
@@ -164,7 +180,7 @@ class EcosystemHandoff(Base):
 
     id = Column(PGUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
     capture_id = Column(PGUUID(as_uuid=True), ForeignKey("captures.id"), nullable=False)
-    target = Column(Enum(HandoffTarget), nullable=False)
+    target = Column(_pg_enum(HandoffTarget), nullable=False)
     status = Column(String(50), nullable=False, server_default="dispatched")  # dispatched | accepted | failed
     upstream_job_id = Column(String(255))
     payload = Column(JSONB, server_default="{}")
