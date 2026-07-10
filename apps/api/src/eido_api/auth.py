@@ -9,7 +9,6 @@ Per the solarpunk-foundry cross-repo conventions:
   - Every authenticated route uses Depends(get_current_user)
 """
 import logging
-from functools import lru_cache
 from typing import Annotated
 
 import httpx
@@ -79,7 +78,7 @@ async def get_current_user(
         global _jwks_cache
         _jwks_cache = None  # Invalidate cache on failure — key may have rotated
         logger.warning("JWT verification failed: %s", exc)
-        raise credentials_exception
+        raise credentials_exception from exc
 
     sub = payload.get("sub")
     if not sub:

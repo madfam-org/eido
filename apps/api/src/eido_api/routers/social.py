@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eido_api.auth import JanuaUser, get_current_user, get_optional_user
+from eido_api.auth import JanuaUser, get_current_user
 from eido_api.db.session import get_db
 from eido_api.models import Capture, SocialEdge, SpatialAnnotation
 
@@ -149,10 +149,9 @@ async def post_comment(
     user: Annotated[JanuaUser, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> CommentResponse:
+    from datetime import UTC, datetime
     from uuid import uuid4
-    from datetime import datetime, UTC
-    from eido_api.models import SocialEdge as SE
-    import json
+
 
     capture_check = await db.execute(select(Capture.id).where(Capture.id == capture_id))
     if not capture_check.scalar_one_or_none():

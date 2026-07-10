@@ -28,6 +28,7 @@ async def auto_tag_capture(capture_id: str) -> None:
     Merges generated tags with user-supplied tags. Silently no-ops on failure.
     """
     from sqlalchemy import select, update
+
     from eido_api.db.session import async_session_maker
     from eido_api.models import Capture
 

@@ -8,10 +8,12 @@ Usage:
     await check_entitlement(user, "capture_limit", db)
 """
 import logging
+
 import httpx
+from fastapi import HTTPException, status
+
 from eido_api.auth import JanuaUser
 from eido_api.config import get_settings
-from fastapi import HTTPException, status
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -48,9 +50,9 @@ async def require_tier(user: JanuaUser, minimum_tier: str) -> None:
     Raise HTTP 402 if the user's tier is below the required minimum.
     Tier order: free < pro < studio
     """
-    ORDER = {"free": 0, "pro": 1, "studio": 2}
+    order = {"free": 0, "pro": 1, "studio": 2}
     tier = await get_user_tier(user)
-    if ORDER.get(tier, 0) < ORDER.get(minimum_tier, 0):
+    if order.get(tier, 0) < order.get(minimum_tier, 0):
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=(

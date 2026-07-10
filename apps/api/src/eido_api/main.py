@@ -12,8 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
 
 from eido_api.config import get_settings
-from eido_api.db.session import close_db, init_db
 from eido_api.db.redis import close_redis, init_redis
+from eido_api.db.session import close_db, init_db
 from eido_api.routers import (
     captures,
     collections,

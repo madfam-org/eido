@@ -144,7 +144,7 @@ async def update_capture_status(
     try:
         capture.status = CaptureStatus(data.status)
     except ValueError:
-        raise HTTPException(status_code=422, detail=f"Invalid status: {data.status}")
+        raise HTTPException(status_code=422, detail=f"Invalid status: {data.status}") from None
 
     for field in ["splat_url", "mesh_url", "thumbnail_url", "gaussian_count",
                   "vertex_count", "processing_time_s", "error_message"]:
@@ -157,9 +157,10 @@ async def update_capture_status(
 
     # On READY: fire auto-tagging (Selva) + ecosystem handoffs in background
     if data.status == CaptureStatus.READY.value and capture.is_public:
+        import asyncio
+
         from eido_api.services.auto_tag import auto_tag_capture
         from eido_api.services.handoff import dispatch_all_handoffs
-        import asyncio
         asyncio.create_task(auto_tag_capture(str(capture_id)))
         asyncio.create_task(dispatch_all_handoffs(str(capture_id)))
 

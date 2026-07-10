@@ -18,7 +18,7 @@ from sqlalchemy import select
 
 from eido_api.config import get_settings
 from eido_api.db.session import async_session_maker
-from eido_api.models import Capture, CaptureStatus, EcosystemHandoff, HandoffTarget
+from eido_api.models import Capture, EcosystemHandoff, HandoffTarget
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
