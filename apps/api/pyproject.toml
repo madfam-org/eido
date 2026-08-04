@@ -28,6 +28,12 @@ dev = [
     "httpx>=0.27.0",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
+    # Validates the Factlas handoff payload against the vendored
+    # observation.v1 contract (tests/test_observation_contract.py). Landed with
+    # the contract in #17 but was never added here, so that test module has
+    # failed to import in CI ever since — a collection error, which pytest
+    # treats as a whole-run failure.
+    "jsonschema>=4.21.0",
 ]
 
 [build-system]
