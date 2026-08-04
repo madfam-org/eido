@@ -117,11 +117,34 @@ class Capture(Base):
     gaussian_count = Column(Integer)
     scale_metric = Column(String(50), server_default="millimeters")
 
-    # Geospatial (for drone captures → Factlas)
+    # Geospatial (for drone captures → Factlas).
+    #
+    # Eido owns georegistration: it is the only product holding both the camera
+    # poses and the GPS priors, so it — not Factlas — turns a capture into an
+    # earth-framed artifact. Factlas receives located facts and never derives
+    # location from pixels. See internal-devops ADR 0002.
     latitude = Column(Float)
     longitude = Column(Float)
     altitude_m = Column(Float)
     is_georeferenced = Column(Boolean, server_default="false")
+
+    #: GeoJSON Polygon of the ground area the capture observed — the convex hull
+    #: of the camera positions. A *coverage envelope*, deliberately not claimed
+    #: to be a cadastral parcel or a building outline. A property is an extent,
+    #: and this is the extent Eido can honestly assert from its own telemetry.
+    footprint = Column(JSONB)
+    footprint_area_m2 = Column(Float)
+    #: "exif" | "dji_srt" | "operator" — how the coordinates were obtained.
+    #: An operator-typed point and a telemetry-derived one are both valid but
+    #: are not equally trustworthy, and the difference travels to Factlas.
+    geo_source = Column(String(50))
+    #: How many frames carried a usable fix. Emitted as a read-proof so a
+    #: consumer can never confuse "no frames had GPS" with "we never looked".
+    geo_prior_count = Column(Integer)
+    #: True only when COLMAP model_aligner actually aligned the sparse model to
+    #: those priors. A capture can have coordinates without being georegistered:
+    #: the point is known, the model is not yet scaled or oriented to it.
+    is_georegistered = Column(Boolean, server_default="false")
 
     # Publishing
     is_public = Column(Boolean, nullable=False, server_default="false")

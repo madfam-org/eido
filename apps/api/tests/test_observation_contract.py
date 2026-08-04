@@ -36,7 +36,45 @@ _VALIDATOR = Draft202012Validator(_SCHEMA)
 class TestFactlasObservationContract:
     """The payload eido emits to Factlas must satisfy the observation envelope."""
 
-    def _emit_producer_payload(self, monkeypatch) -> dict:
+    #: Coverage envelope of a ~100 m box around the Zócalo, as media-prep emits it.
+    _ENVELOPE = {
+        "type": "Polygon",
+        "coordinates": [
+            [
+                [-99.13368, 19.43215],
+                [-99.13272, 19.43215],
+                [-99.13272, 19.43305],
+                [-99.13368, 19.43305],
+                [-99.13368, 19.43215],
+            ]
+        ],
+    }
+
+    def _capture(self, **overrides) -> SimpleNamespace:
+        """A georeferenced drone capture — only the attributes the dispatcher reads.
+
+        One factory rather than inline literals, so a new Capture column the
+        dispatcher starts reading fails loudly here (AttributeError) instead of
+        in production.
+        """
+        fields = {
+            "id": "3f9c2b7e-8a41-4d2e-9b0c-1f2e3d4c5b6a",
+            "title": "Zócalo aerial",
+            "mesh_url": "https://cdn.eido.cam/3f9c/mesh.spz",
+            "altitude_m": 120,
+            "latitude": 19.4326,
+            "longitude": -99.1332,
+            "is_georeferenced": True,
+            "footprint": self._ENVELOPE,
+            "footprint_area_m2": 11740.5,
+            "geo_source": "dji_srt",
+            "geo_prior_count": 184,
+            "is_georegistered": True,
+        }
+        fields.update(overrides)
+        return SimpleNamespace(**fields)
+
+    def _emit_producer_payload(self, monkeypatch, capture=None) -> dict:
         """Run the real ``_dispatch_factlas`` and return the payload it POSTs.
 
         Intercepts the outbound HTTP POST and the audit-log write so no network
@@ -54,7 +92,7 @@ class TestFactlasObservationContract:
             def __init__(self, *args, **kwargs) -> None:
                 pass
 
-            async def __aenter__(self) -> "_FakeClient":
+            async def __aenter__(self) -> _FakeClient:
                 return self
 
             async def __aexit__(self, *args) -> bool:
@@ -72,18 +110,7 @@ class TestFactlasObservationContract:
         monkeypatch.setattr(handoff.httpx, "AsyncClient", _FakeClient)
         monkeypatch.setattr(handoff, "_log_handoff", _noop_log)
 
-        # A georeferenced drone capture — only attributes _dispatch_factlas reads.
-        capture = SimpleNamespace(
-            id="3f9c2b7e-8a41-4d2e-9b0c-1f2e3d4c5b6a",
-            title="Zócalo aerial",
-            mesh_url="https://cdn.eido.cam/3f9c/mesh.spz",
-            altitude_m=120,
-            latitude=19.4326,
-            longitude=-99.1332,
-            is_georeferenced=True,
-        )
-
-        asyncio.run(handoff._dispatch_factlas(capture))
+        asyncio.run(handoff._dispatch_factlas(capture if capture is not None else self._capture()))
 
         assert "payload" in captured, "_dispatch_factlas did not POST an observation payload"
         return captured["payload"]
@@ -104,6 +131,89 @@ class TestFactlasObservationContract:
         )
         # Factlas derives h3 server-side; producers must NOT send it (factlas#16).
         assert "h3" not in payload, "eido must not send h3 — Factlas derives it"
+
+    # --- Extent + provenance (contract revision 2026-08-04) --------------------
+
+    def test_georeferenced_capture_emits_its_coverage_envelope(self, monkeypatch):
+        """A property is an extent, so the handoff carries the polygon too."""
+        payload = self._emit_producer_payload(monkeypatch)
+        _VALIDATOR.validate(payload)
+
+        assert payload["geometry"] == self._ENVELOPE
+        ring = payload["geometry"]["coordinates"][0]
+        assert ring[0] == ring[-1], "GeoJSON rings must be explicitly closed"
+        # The representative point must stay inside the envelope it describes.
+        lons = [c[0] for c in ring]
+        lats = [c[1] for c in ring]
+        assert min(lons) <= payload["lon"] <= max(lons)
+        assert min(lats) <= payload["lat"] <= max(lats)
+
+    def test_geo_anchor_carries_provenance_and_a_read_proof(self, monkeypatch):
+        payload = self._emit_producer_payload(monkeypatch)
+        anchor = payload["geo_anchor"]
+
+        assert anchor["source"] == "dji_srt"
+        # prior_count is the read-proof: it distinguishes "no frames carried
+        # GPS" from "this producer does not report that".
+        assert anchor["prior_count"] == 184
+        assert anchor["is_georegistered"] is True
+        assert anchor["footprint_kind"] == "capture_envelope"
+        assert anchor["crs"] == "EPSG:4326"
+
+    def test_capture_without_an_envelope_still_emits_a_valid_observation(self, monkeypatch):
+        """Operator-anchored captures have coordinates but no polygon."""
+        capture = self._capture(
+            footprint=None,
+            footprint_area_m2=None,
+            geo_source="operator",
+            geo_prior_count=None,
+            is_georegistered=False,
+        )
+        payload = self._emit_producer_payload(monkeypatch, capture)
+        _VALIDATOR.validate(payload)
+
+        assert "geometry" not in payload, "no envelope means no geometry key, not a null"
+        anchor = payload["geo_anchor"]
+        assert anchor["source"] == "operator"
+        assert anchor["is_georegistered"] is False
+        # Unset provenance is omitted rather than sent as null — a consumer
+        # reading `prior_count: null` cannot tell absence from unreported.
+        assert "prior_count" not in anchor
+        assert "footprint_kind" not in anchor
+
+    def test_flagged_georeferenced_without_coordinates_does_not_dispatch(self, monkeypatch):
+        """Guard against emitting a payload that fails the contract's `required`.
+
+        A null lat/lon 422s at the Factlas boundary, which is far harder to
+        trace back than refusing to send it.
+        """
+        from eido_api.services import handoff
+
+        posted: list = []
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            async def __aenter__(self) -> _FakeClient:
+                return self
+
+            async def __aexit__(self, *args) -> bool:
+                return False
+
+            async def post(self, *args, **kwargs):  # pragma: no cover - must not run
+                posted.append(kwargs)
+                raise AssertionError("dispatched an observation with no coordinates")
+
+        async def _noop_log(*args, **kwargs) -> None:
+            return None
+
+        monkeypatch.setattr(handoff.httpx, "AsyncClient", _FakeClient)
+        monkeypatch.setattr(handoff, "_log_handoff", _noop_log)
+
+        capture = self._capture(latitude=None, longitude=None, is_georeferenced=True)
+        asyncio.run(handoff._dispatch_factlas(capture))
+        assert posted == []
 
     # --- Drift guards: the schema must REJECT malformed payloads ----------------
 

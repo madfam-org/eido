@@ -36,8 +36,12 @@ class IngestRequest(BaseModel):
     mode: CaptureMode = CaptureMode.GAUSSIAN_SPLATTING
     file_name: str = Field(..., description="Original filename for S3 key generation")
     file_size_bytes: int = Field(..., gt=0)
-    latitude: float | None = None
-    longitude: float | None = None
+    # Optional operator-supplied anchor. Most captures leave these empty and are
+    # georeferenced from their own telemetry during processing (GPS EXIF / DJI
+    # SRT), which the media-prep stage extracts. When supplied, these win: an
+    # owner naming their own property is better ground truth than a GPS chip.
+    latitude: float | None = Field(None, ge=-90, le=90)
+    longitude: float | None = Field(None, ge=-180, le=180)
     altitude_m: float | None = None
     tags: list[str] = []
     license: str = "CC-BY-4.0"
@@ -66,6 +70,17 @@ class CaptureResponse(BaseModel):
     license: str | None
     tags: list[str]
     is_georeferenced: bool
+    # Georeference detail — present once processing has run. `is_georeferenced`
+    # alone cannot distinguish a capture anchored to a single typed point from
+    # one whose model is actually aligned to observed GPS over a known extent.
+    is_georegistered: bool = False
+    latitude: float | None = None
+    longitude: float | None = None
+    altitude_m: float | None = None
+    footprint: dict[str, Any] | None = None
+    footprint_area_m2: float | None = None
+    geo_source: str | None = None
+    geo_prior_count: int | None = None
     created_at: str
 
 
@@ -108,6 +123,14 @@ def _capture_to_response(c: Capture) -> CaptureResponse:
         license=c.license,
         tags=c.tags or [],
         is_georeferenced=c.is_georeferenced or False,
+        is_georegistered=c.is_georegistered or False,
+        latitude=c.latitude,
+        longitude=c.longitude,
+        altitude_m=c.altitude_m,
+        footprint=c.footprint,
+        footprint_area_m2=c.footprint_area_m2,
+        geo_source=c.geo_source,
+        geo_prior_count=c.geo_prior_count,
         created_at=str(c.created_at),
     )
 
@@ -138,7 +161,11 @@ async def ingest_capture(
         latitude=data.latitude,
         longitude=data.longitude,
         altitude_m=data.altitude_m,
-        is_georeferenced=bool(data.latitude and data.longitude),
+        # `is not None`, not a truthiness test: `bool(lat and lon)` is False for
+        # a longitude of exactly 0.0, so every capture on the Greenwich meridian
+        # was silently recorded as un-georeferenced.
+        is_georeferenced=data.latitude is not None and data.longitude is not None,
+        geo_source="operator" if data.latitude is not None and data.longitude is not None else None,
         tags=data.tags,
         license=data.license,
     )

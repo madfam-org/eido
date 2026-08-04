@@ -29,6 +29,14 @@ export default function NewCapturePage() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  // Optional operator-supplied anchor. Left blank for most captures: the
+  // media-prep stage reads GPS EXIF / DJI SRT telemetry off the upload itself.
+  // When filled, these win — an owner naming their own property is better
+  // ground truth than a GPS chip 120m up.
+  const [mode, setMode] = useState("3dgs");
+  const [latitude, setLatitude] = useState("");
+  const [longitude, setLongitude] = useState("");
+  const [altitude, setAltitude] = useState("");
 
   useEffect(() => {
     const saved = sessionStorage.getItem(TOKEN_KEY);
@@ -42,9 +50,44 @@ export default function NewCapturePage() {
     if (f) setFile(f);
   }, []);
 
+  /** Parse an optional coordinate box. Returns undefined when blank, null when
+   *  the text is not a number — so a typo is refused rather than silently
+   *  dropped, which would upload an un-anchored capture without saying so. */
+  const parseCoord = (raw: string): number | null | undefined => {
+    const t = raw.trim();
+    if (!t) return undefined;
+    const n = Number(t);
+    return Number.isFinite(n) ? n : null;
+  };
+
   const submit = async () => {
     if (!file || !title || !token) return;
     setError(null);
+
+    const lat = parseCoord(latitude);
+    const lon = parseCoord(longitude);
+    const alt = parseCoord(altitude);
+    if (lat === null || lon === null || alt === null) {
+      setError("Latitude, longitude and altitude must be numbers (or left blank).");
+      setPhase("error");
+      return;
+    }
+    if ((lat === undefined) !== (lon === undefined)) {
+      setError("Give both latitude and longitude, or neither.");
+      setPhase("error");
+      return;
+    }
+    if (lat !== undefined && (lat < -90 || lat > 90)) {
+      setError("Latitude must be between -90 and 90.");
+      setPhase("error");
+      return;
+    }
+    if (lon !== undefined && (lon < -180 || lon > 180)) {
+      setError("Longitude must be between -180 and 180.");
+      setPhase("error");
+      return;
+    }
+
     sessionStorage.setItem(TOKEN_KEY, token);
     const auth = { Authorization: `Bearer ${token}` };
 
@@ -56,11 +99,13 @@ export default function NewCapturePage() {
         body: JSON.stringify({
           title,
           description: description || null,
-          mode: "3dgs",
+          mode,
           file_name: file.name,
           file_size_bytes: file.size,
           tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
           license,
+          ...(lat !== undefined ? { latitude: lat, longitude: lon } : {}),
+          ...(alt !== undefined ? { altitude_m: alt } : {}),
         }),
       });
       if (!ingest.ok) throw new Error(`ingest failed (${ingest.status}): ${await ingest.text()}`);
@@ -112,8 +157,9 @@ export default function NewCapturePage() {
       <main className="max-w-xl mx-auto px-6 py-10">
         <h1 className="text-2xl font-semibold text-white">New capture</h1>
         <p className="text-sm text-slate-400 mt-1">
-          Upload a capture archive (zip of photos, or a video). The 3DGS
-          pipeline runs after upload.
+          Upload a capture archive (zip of photos, or a video). Video is decoded to
+          frames and any GPS telemetry is read before reconstruction, so drone
+          footage is anchored on its own location.
         </p>
 
         <div className="space-y-4 mt-8">
@@ -150,6 +196,61 @@ export default function NewCapturePage() {
                   <option key={l} value={l} className="bg-[#0d0d18]">{l}</option>
                 ))}
               </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs text-slate-500 uppercase tracking-wider">Capture mode</label>
+            <select className={inputCls} value={mode} onChange={(e) => setMode(e.target.value)}>
+              {[
+                ["3dgs", "Gaussian splatting (default)"],
+                ["drone", "Drone / aerial"],
+                ["photogrammetry", "Photogrammetry"],
+                ["lidar", "LiDAR"],
+              ].map(([value, label]) => (
+                <option key={value} value={value} className="bg-[#0d0d18]">{label}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Georeference. Optional by design: a drone upload carries its own
+              GPS (EXIF on stills, DJI SRT alongside video) and is anchored
+              automatically during processing. These boxes are for footage whose
+              metadata was stripped, or to override it with a known location. */}
+          <div>
+            <label className="text-xs text-slate-500 uppercase tracking-wider">
+              Location <span className="text-slate-600 normal-case tracking-normal">— optional</span>
+            </label>
+            <p className="text-xs text-slate-500 mt-1 mb-2">
+              Leave blank for drone footage: Eido reads GPS from the media itself and
+              anchors the capture in Factlas. Fill these in only to override, or if the
+              footage has no GPS metadata.
+            </p>
+            <div className="grid grid-cols-3 gap-3">
+              <input
+                className={inputCls}
+                value={latitude}
+                onChange={(e) => setLatitude(e.target.value)}
+                placeholder="Latitude"
+                inputMode="decimal"
+                aria-label="Latitude"
+              />
+              <input
+                className={inputCls}
+                value={longitude}
+                onChange={(e) => setLongitude(e.target.value)}
+                placeholder="Longitude"
+                inputMode="decimal"
+                aria-label="Longitude"
+              />
+              <input
+                className={inputCls}
+                value={altitude}
+                onChange={(e) => setAltitude(e.target.value)}
+                placeholder="Altitude (m)"
+                inputMode="decimal"
+                aria-label="Altitude in metres"
+              />
             </div>
           </div>
 
