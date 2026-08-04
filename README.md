@@ -2,23 +2,46 @@
 **Domains:** `eido.cam` (Product/Gallery) | `eidocam.com` (Redirect)
 **Entity:** Innovaciones MADFAM SAS de CV
 
-## Current Status (2026-07-04)
+## Current Status (2026-08-04)
 
-Eido is a **concept / PRD — there is no working product**. This document
-describes what Eido is intended to become, not what exists.
+Eido is a **working shell with a real georeference path and no reconstruction**.
+Read Sections 1–4 below as vision; this section is the truth.
 
-- The repository is a **single-commit code skeleton**: a Next.js web shell
-  (`apps/web`), a FastAPI skeleton (`apps/api`), and thin stub containers for
-  the pipeline stages (`services/*`, a few hundred lines total). None of it has
-  been verified to run end-to-end, and there are no tests, releases, or
-  deployments.
+**What exists and runs:**
+
+- `eido.cam` is deployed — web, API and orchestration, via GitOps (CI signs and
+  digest-pins; ArgoCD reconciles). Live health checks were recorded in the
+  2026-07-10 go-live runbook (internal-devops); they are **not** re-verified in
+  this README, so treat deployment state as "last known good", not as proof.
+- A test suite exists and gates CI: 20 API tests and 30 pipeline-stage tests.
+- **Georeference works end to end in code.** `services/media-prep` (stage 0,
+  CPU-only) extracts zip archives, decodes video to frames with ffmpeg, and
+  reads the position the media already carries — GPS EXIF from stills, DJI SRT
+  telemetry alongside video. `colmap-sfm` then runs `model_aligner` against
+  those priors, and a georeferenced capture emits a located observation to
+  Factlas carrying its coverage envelope and provenance.
+
+**What does not work yet:**
+
+- **The reconstruction pipeline does not run.** No GPU node exists in the
+  cluster; the orchestration worker shells `docker run --gpus all` from a
+  CPU-only pod, and the 3DGS trainer invokes a module that does not exist. No
+  capture has produced a real `.spz` in production. media-prep is deliberately
+  CPU-only so a capture is still normalized and georeferenced without it.
+- **R2 storage and the Janua M2M service client are unprovisioned** as of the
+  last recorded check (2026-07-10). Until they are, uploads and the Factlas
+  handoff cannot complete in production regardless of the code.
 - **Not built**, despite the repo structure in Section 5: the iOS/Android
   capture apps (`apps/mobile-ios`, `apps/mobile-android`), the `packages/`
   libraries (`r3f-splat-viewer`, `eido-sdk`), and `ops/terraform`.
 - The Quickstart in Section 6 references a different repository URL and sample
   data that do not exist here; it cannot currently be followed.
 
-Read everything below as **vision/roadmap**.
+> The status block this replaces was written 2026-07-04 and said "there is no
+> working product… a single-commit code skeleton… no tests, releases, or
+> deployments." That had been false for a month. Understating is a truthfulness
+> failure in the same way overstating is: it teaches readers the status block is
+> not worth reading.
 
 ## 1. Vision & Philosophy
 Eido is the sovereign optical sensor and spatial gallery of the MADFAM ecosystem. Derived from *Eidos* (the classical concept of pure, ideal form), the platform operates on a single truth: to extract the exact, metric geometry of a physical object from the noise of reality. 
@@ -70,7 +93,8 @@ Eido maintains strict architectural isolation to prevent monolithic bloat, passi
 │   └── mobile-android/      # Kotlin/ARCore capture app
 ├── services/
 │   ├── orchestration/       # Job queue for ephemeral GPU allocation
-│   ├── colmap-sfm/          # Structure-from-Motion alignment containers
+│   ├── media-prep/          # Stage 0 (CPU): zip/video → frames, GPS EXIF + DJI SRT → geo priors
+│   ├── colmap-sfm/          # Structure-from-Motion alignment + GPS georegistration
 │   ├── gaussian-splatting/  # CUDA kernels for 3DGS training 
 │   └── splat-to-mesh/       # Poisson surface reconstruction & material extraction
 ├── packages/

@@ -13,13 +13,30 @@ should not become the source of truth again.
 
 ## What Eido is
 
-Reality-capture platform: photo/video uploads → COLMAP SfM → 3D Gaussian
-Splatting → mesh/`.spz` artifacts → WebGL gallery at eido.cam. Three deployed
-services (`eido-api`, `eido-web`, `eido-orchestration`) plus ephemeral GPU
-pipeline containers (`services/colmap-sfm`, `services/gaussian-splatting`,
+Reality-capture platform: photo/video uploads → media-prep → COLMAP SfM →
+3D Gaussian Splatting → mesh/`.spz` artifacts → WebGL gallery at eido.cam.
+Three deployed services (`eido-api`, `eido-web`, `eido-orchestration`), the
+CPU-only `services/media-prep` stage, plus ephemeral GPU pipeline containers
+(`services/colmap-sfm`, `services/gaussian-splatting`,
 `services/splat-to-mesh`) dispatched via Vast.ai. Honest status lives in
 `README.md` and `docs/DEPLOYMENT.md` — keep it truthful; this product is
 pre-alpha and docs must not claim otherwise.
+
+**Eido owns georegistration.** It is the only product holding both the camera
+poses and the per-image GPS priors, so it — not Factlas — turns a capture into
+an earth-framed artifact: `services/media-prep` reads GPS EXIF and DJI SRT
+telemetry, and `colmap-sfm` runs `model_aligner` against those priors. Factlas
+receives *located facts* and never derives location from pixels. Ratified in
+internal-devops ADR-005; do not move this concern across that boundary.
+
+Two distinctions the code depends on:
+
+- **georeferenced** (the capture has coordinates) is not **georegistered** (its
+  model was actually aligned to them). Conflating them lets an un-anchored model
+  pass as anchored.
+- The footprint is a **`capture_envelope`** — the ground area the capture
+  observed, from the hull of the camera positions. It is not a cadastral parcel
+  or a building outline, and must not be described as one.
 
 ## Required operating doctrine
 
