@@ -2,7 +2,7 @@
   "contract": "madfam.geo.observation",
   "version": 1,
   "canonical": "madfam-org/internal-devops/contracts/observation.v1.json",
-  "description": "Cross-repo contract for the georeferenced observation envelope POSTed to Factlas at POST /api/v1/observations. Producers (e.g. Eido capture handoffs) must emit exactly this shape; Factlas validates it as ObservationCreate. Changing this file is a cross-repo act: update the canonical copy and BOTH vendored copies in the same change set. Additive fields stay within v1; bump version only for breaking shape changes.",
+  "description": "Cross-repo contract for the georeferenced observation envelope POSTed to Factlas at POST /api/v1/observations. Producers (e.g. Eido capture handoffs) must emit exactly this shape; Factlas validates it as ObservationCreate. Changing this file is a cross-repo act: update the canonical copy and ALL vendored copies in the same change set. Additive fields stay within v1; bump version only for breaking shape changes.",
   "endpoint": "POST https://api.factl.as/api/v1/observations",
   "auth": "Janua bearer (RS256, verified via JWKS). Service principals authenticate with an OAuth2 client_credentials token — Factlas require_user accepts any valid Janua token with a sub.",
   "schema": {
@@ -17,7 +17,7 @@
         "type": "number",
         "minimum": -90,
         "maximum": 90,
-        "description": "Latitude in decimal degrees (WGS84)"
+        "description": "Latitude in decimal degrees (WGS84). Always required — it is the observation's representative point, and Factlas derives h3_8 from it even when a full geometry is supplied."
       },
       "lon": {
         "type": "number",
@@ -40,12 +40,22 @@
         "minimum": 0.0,
         "maximum": 1.0,
         "default": 1.0,
-        "description": "Producer confidence in the observation"
+        "description": "Producer confidence in the observation itself — not in the accuracy of its georeference, which belongs in geo_anchor."
       },
       "provider": {
         "type": "string",
         "default": "api_user",
         "description": "Data provider identifier, e.g. 'eido'"
+      },
+      "geometry": {
+        "type": ["object", "null"],
+        "default": null,
+        "description": "Optional GeoJSON geometry (Polygon, MultiPolygon or Point, WGS84 / EPSG:4326) giving the observation's EXTENT rather than only its representative point. Added in the 2026-08-04 revision: a property is an extent, and a lat/lon alone is a pin near one. Factlas stores this as the observation's geom when present and falls back to ST_MakePoint(lon, lat) when absent, so producers that only have a point are unaffected. Rings must be explicitly closed (first coordinate repeated as the last). The observation's lat/lon must still be supplied and should fall inside the geometry."
+      },
+      "geo_anchor": {
+        "type": ["object", "null"],
+        "default": null,
+        "description": "Optional provenance of the georeference — how the location was obtained and how far to trust it. Recognised keys: 'source' (e.g. 'exif', 'dji_srt', 'operator', 'exif+dji_srt'), 'prior_count' (integer — how many source frames carried a fix; a read-proof, so a consumer can distinguish 'no frames had GPS' from 'nothing ever looked'), 'is_georegistered' (boolean — whether the producer's 3D model was actually aligned to those priors, which is distinct from merely having coordinates), 'footprint_kind' (e.g. 'capture_envelope' — what the geometry represents; 'capture_envelope' is the ground area a capture observed, explicitly NOT a cadastral parcel or building outline), 'footprint_area_m2' (number), and 'crs' (default 'EPSG:4326'). Unrecognised keys are permitted and preserved."
       }
     }
   },
@@ -62,15 +72,61 @@
       },
       "provider": "eido",
       "confidence": 0.95
+    },
+    {
+      "lat": 19.4326,
+      "lon": -99.1332,
+      "type": "drone_capture",
+      "properties": {
+        "eido_id": "3f9c…",
+        "title": "Zócalo aerial",
+        "mesh_url": "https://cdn.eido.cam/…/mesh.spz",
+        "altitude_m": 120
+      },
+      "provider": "eido",
+      "confidence": 0.95,
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [-99.1337, 19.4321],
+            [-99.1327, 19.4321],
+            [-99.1327, 19.4331],
+            [-99.1337, 19.4331],
+            [-99.1337, 19.4321]
+          ]
+        ]
+      },
+      "geo_anchor": {
+        "source": "dji_srt",
+        "prior_count": 184,
+        "is_georegistered": true,
+        "footprint_kind": "capture_envelope",
+        "footprint_area_m2": 11740.5,
+        "crs": "EPSG:4326"
+      }
     }
   ],
   "vendored_copies": {
-    "madfam-org/factlas": "apps/api/schemas.py — ObservationCreate (the validating consumer)",
-    "madfam-org/eido": "apps/api/src/eido_api/services/handoff.py — _dispatch_factlas payload (the producer)"
+    "madfam-org/factlas": "apps/api/contracts/observation.v1.json (byte-identical) + apps/api/schemas.py — ObservationCreate (the validating consumer)",
+    "madfam-org/eido": "apps/api/contracts/observation.v1.json (byte-identical) + apps/api/src/eido_api/services/handoff.py — _dispatch_factlas payload (a producer)",
+    "madfam-org/routecraft": "packages/integrations/src/factlas/contracts/observation.v1.json (byte-identical) — emits city_lifestyle_index / event_venue / city_event observations (a producer)"
   },
   "notes": {
     "additionalProperties": "Set to false as the canonical target. Factlas's current Pydantic ObservationCreate IGNORES unknown top-level fields rather than rejecting them, so producers must not rely on extra fields carrying through — nest producer-specific data under `properties`.",
-    "provider": "Eido emits provider='eido'; Factlas's own default is 'api_user'.",
-    "h3": "Factlas derives observation.h3_8 server-side (real H3, app-layer) from lat/lon — producers do NOT send it (factlas#16)."
-  }
+    "provider": "Eido emits provider='eido'; RouteCraft emits provider='routecraft'; Factlas's own default is 'api_user'.",
+    "h3": "Factlas derives observation.h3_8 server-side (real H3, app-layer) from lat/lon — producers do NOT send it (factlas#16).",
+    "geometry_vs_lat_lon": "lat/lon stay REQUIRED even when geometry is present. They are the representative point used for h3_8, for the entity row, and by consumers that only handle points (the Atlas renders a marker). Sending a geometry whose interior does not contain lat/lon is a producer bug.",
+    "confidence_vs_geo_anchor": "`confidence` is confidence in the observation (is this really a warehouse?). Georeference quality — how the position was derived and whether a model was aligned to it — belongs in `geo_anchor`. Conflating them loses the distinction between 'we are sure what this is' and 'we are sure where this is'."
+  },
+  "revisions": [
+    {
+      "date": "2026-07-10",
+      "change": "Initial canonical publication of the Eido→Factlas observation envelope."
+    },
+    {
+      "date": "2026-08-04",
+      "change": "Additive within v1: optional `geometry` (GeoJSON extent) and `geo_anchor` (georeference provenance). Motivated by the 2026-08-03 drone-capture path audit — a property is an extent, not a point, and a consumer could not previously tell an operator-typed coordinate from telemetry-derived, model-aligned georegistration. Existing producers that send neither field are unaffected."
+    }
+  ]
 }

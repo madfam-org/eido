@@ -6,7 +6,7 @@ GET  /api/v1/jobs/             — list jobs for current user
 PATCH /api/v1/captures/{id}/status — internal callback from orchestration worker
 """
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -37,6 +37,23 @@ class JobStatusResponse(BaseModel):
     processing_time_s: float | None = None
 
 
+class CaptureGeo(BaseModel):
+    """Georeference derived by the media-prep stage from the media's telemetry.
+
+    Mirrors the ``geo.json`` that stage writes (schema ``eido.capture.geo/1``).
+    This is the only path by which a capture becomes georeferenced without an
+    operator typing coordinates — GPS EXIF on drone stills, or DJI SRT telemetry
+    riding alongside video.
+    """
+
+    is_georeferenced: bool = False
+    anchor: dict[str, Any] | None = None
+    footprint: dict[str, Any] | None = None
+    footprint_area_m2: float | None = None
+    prior_count: int | None = None
+    is_georegistered: bool = False
+
+
 class StatusPatchRequest(BaseModel):
     """Internal-only: called by orchestration worker to update capture status."""
     status: str
@@ -47,6 +64,7 @@ class StatusPatchRequest(BaseModel):
     vertex_count: int | None = None
     processing_time_s: float | None = None
     error_message: str | None = None
+    geo: CaptureGeo | None = None
 
 
 _STATUS_STAGE_MAP = {
@@ -59,6 +77,52 @@ _STATUS_STAGE_MAP = {
     CaptureStatus.READY: ("Complete", 100),
     CaptureStatus.FAILED: ("Failed", None),
 }
+
+
+def _apply_geo(capture: Capture, geo: CaptureGeo) -> None:
+    """Fold a telemetry-derived georeference into the capture row.
+
+    Operator-supplied coordinates win. Someone who typed a location for their
+    own property is asserting ground truth about a place they know; a GPS chip
+    reporting from 120 m up is not more authoritative than that. So this only
+    fills coordinates that are still empty — but it always records the envelope
+    and the provenance, which the operator cannot supply by hand.
+    """
+    anchor = geo.anchor or {}
+
+    if geo.is_georeferenced and anchor:
+        if capture.latitude is None or capture.longitude is None:
+            capture.latitude = anchor.get("lat")
+            capture.longitude = anchor.get("lon")
+            if anchor.get("alt_m") is not None:
+                capture.altitude_m = anchor.get("alt_m")
+            sources = anchor.get("sources") or []
+            capture.geo_source = "+".join(sources) if sources else "telemetry"
+        elif not capture.geo_source:
+            capture.geo_source = "operator"
+
+    if geo.footprint:
+        capture.footprint = geo.footprint
+        capture.footprint_area_m2 = geo.footprint_area_m2
+
+    if geo.prior_count is not None:
+        capture.geo_prior_count = geo.prior_count
+
+    capture.is_georegistered = bool(geo.is_georegistered)
+    # Recomputed rather than copied from the payload: the flag must always
+    # agree with the coordinates actually stored on the row, whichever of the
+    # two sources supplied them.
+    capture.is_georeferenced = capture.latitude is not None and capture.longitude is not None
+
+    logger.info(
+        "Capture %s georeference: georeferenced=%s registered=%s source=%s priors=%s envelope=%sm2",
+        capture.id,
+        capture.is_georeferenced,
+        capture.is_georegistered,
+        capture.geo_source,
+        capture.geo_prior_count,
+        capture.footprint_area_m2,
+    )
 
 
 @router.get("/{capture_id}", response_model=JobStatusResponse)
@@ -152,6 +216,9 @@ async def update_capture_status(
         val = getattr(data, field)
         if val is not None:
             setattr(capture, field, val)
+
+    if data.geo is not None:
+        _apply_geo(capture, data.geo)
 
     await db.flush()
     logger.info("Capture %s status → %s", capture_id, data.status)

@@ -87,8 +87,18 @@ async def _dispatch_factlas(capture: Capture) -> None:
     """
     if not capture.is_georeferenced:
         return
+    if capture.latitude is None or capture.longitude is None:
+        # is_georeferenced is derived from these two, so this should be
+        # unreachable — but a null lat/lon would fail the contract's `required`
+        # at the Factlas boundary, and a caught 422 there is far harder to trace
+        # back than a refusal here.
+        logger.warning(
+            "Capture %s is flagged georeferenced but has no coordinates; skipping Factlas handoff",
+            capture.id,
+        )
+        return
 
-    payload = {
+    payload: dict[str, Any] = {
         "lat": capture.latitude,
         "lon": capture.longitude,
         "type": "drone_capture",
@@ -101,6 +111,25 @@ async def _dispatch_factlas(capture: Capture) -> None:
         "provider": "eido",
         "confidence": 0.95,
     }
+
+    # Extent + provenance (observation.v1, 2026-08-04 revision). Both optional,
+    # so a capture georeferenced only by an operator-typed point still emits a
+    # valid observation — it just carries no envelope.
+    if capture.footprint:
+        payload["geometry"] = capture.footprint
+
+    geo_anchor = {
+        "source": capture.geo_source or "unknown",
+        "prior_count": capture.geo_prior_count,
+        "is_georegistered": bool(capture.is_georegistered),
+        "footprint_kind": "capture_envelope" if capture.footprint else None,
+        "footprint_area_m2": capture.footprint_area_m2,
+        "crs": "EPSG:4326",
+    }
+    # Drop unset keys rather than sending nulls: a consumer reading
+    # `prior_count: null` cannot tell "no frames had GPS" from "this producer
+    # does not report that", and those mean very different things.
+    payload["geo_anchor"] = {k: v for k, v in geo_anchor.items() if v is not None}
     url = f"{settings.factlas_url}/api/v1/observations"
     # Factlas gates writes behind Janua auth (require_user); authenticate this
     # handoff as an Eido service principal. Falls back to no header when M2M
