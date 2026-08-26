@@ -143,10 +143,35 @@ jobs:
 
       # The eido namespace enforces verify-image-signatures (Kyverno);
       # unsigned images are admission-denied.
+      # Retry the sign call: GitHub's OIDC endpoint transiently returns
+      # non-JSON ("invalid character 'u' looking for beginning of value"),
+      # which killed crea-frontend run 33010085743 on 2026-08-26 after the
+      # image was already built and pushed.
       - name: Sign image with cosign
+        id: sign
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.ORG }}/eido-api@${{ steps.push.outputs.digest }}
         run: |
-          cosign sign --yes \
-            ${{ env.REGISTRY }}/${{ env.ORG }}/eido-api@${{ steps.push.outputs.digest }}
+          set -euo pipefail
+          signed=0
+          for wait in 0 20 60; do
+            if [ "$wait" -gt 0 ]; then
+              echo "::warning::cosign sign failed for ${IMAGE_REF} (transient OIDC/Fulcio/Rekor?); retrying in ${wait}s..."
+              sleep "$wait"
+            fi
+            if cosign sign --yes "${IMAGE_REF}"; then
+              signed=1
+              break
+            fi
+          done
+          if [ "$signed" -ne 1 ]; then
+            echo "::error::cosign sign failed 3 times for ${IMAGE_REF}."
+            echo "::error::The image was BUILT AND PUSHED but is NOT signed, so the deploy job"
+            echo "::error::never pins it and ArgoCD is never handed a new digest: the live host is"
+            echo "::error::still serving the PREVIOUS build even though this commit is on main."
+            echo "::error::Rerun the failed jobs (gh run rerun <run-id> --failed)."
+            exit 1
+          fi
 
   build-web:
     name: Build Web Image
@@ -197,10 +222,35 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
+      # Retry the sign call: GitHub's OIDC endpoint transiently returns
+      # non-JSON ("invalid character 'u' looking for beginning of value"),
+      # which killed crea-frontend run 33010085743 on 2026-08-26 after the
+      # image was already built and pushed.
       - name: Sign image with cosign
+        id: sign
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.ORG }}/eido-web@${{ steps.push.outputs.digest }}
         run: |
-          cosign sign --yes \
-            ${{ env.REGISTRY }}/${{ env.ORG }}/eido-web@${{ steps.push.outputs.digest }}
+          set -euo pipefail
+          signed=0
+          for wait in 0 20 60; do
+            if [ "$wait" -gt 0 ]; then
+              echo "::warning::cosign sign failed for ${IMAGE_REF} (transient OIDC/Fulcio/Rekor?); retrying in ${wait}s..."
+              sleep "$wait"
+            fi
+            if cosign sign --yes "${IMAGE_REF}"; then
+              signed=1
+              break
+            fi
+          done
+          if [ "$signed" -ne 1 ]; then
+            echo "::error::cosign sign failed 3 times for ${IMAGE_REF}."
+            echo "::error::The image was BUILT AND PUSHED but is NOT signed, so the deploy job"
+            echo "::error::never pins it and ArgoCD is never handed a new digest: the live host is"
+            echo "::error::still serving the PREVIOUS build even though this commit is on main."
+            echo "::error::Rerun the failed jobs (gh run rerun <run-id> --failed)."
+            exit 1
+          fi
 
   build-orchestration:
     name: Build Orchestration Image
@@ -250,10 +300,35 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
+      # Retry the sign call: GitHub's OIDC endpoint transiently returns
+      # non-JSON ("invalid character 'u' looking for beginning of value"),
+      # which killed crea-frontend run 33010085743 on 2026-08-26 after the
+      # image was already built and pushed.
       - name: Sign image with cosign
+        id: sign
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.ORG }}/eido-orchestration@${{ steps.push.outputs.digest }}
         run: |
-          cosign sign --yes \
-            ${{ env.REGISTRY }}/${{ env.ORG }}/eido-orchestration@${{ steps.push.outputs.digest }}
+          set -euo pipefail
+          signed=0
+          for wait in 0 20 60; do
+            if [ "$wait" -gt 0 ]; then
+              echo "::warning::cosign sign failed for ${IMAGE_REF} (transient OIDC/Fulcio/Rekor?); retrying in ${wait}s..."
+              sleep "$wait"
+            fi
+            if cosign sign --yes "${IMAGE_REF}"; then
+              signed=1
+              break
+            fi
+          done
+          if [ "$signed" -ne 1 ]; then
+            echo "::error::cosign sign failed 3 times for ${IMAGE_REF}."
+            echo "::error::The image was BUILT AND PUSHED but is NOT signed, so the deploy job"
+            echo "::error::never pins it and ArgoCD is never handed a new digest: the live host is"
+            echo "::error::still serving the PREVIOUS build even though this commit is on main."
+            echo "::error::Rerun the failed jobs (gh run rerun <run-id> --failed)."
+            exit 1
+          fi
 
   # Stage 0 of the pipeline. Built here — unlike the four GPU stage images,
   # which are still unbuilt pending GPU capacity — because it is CPU-only and
@@ -306,10 +381,34 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
+      # Retry the sign call: GitHub's OIDC endpoint transiently returns
+      # non-JSON ("invalid character 'u' looking for beginning of value"),
+      # which killed crea-frontend run 33010085743 on 2026-08-26 after the
+      # image was already built and pushed.
       - name: Sign image with cosign
+        id: sign
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ env.ORG }}/eido-media-prep@${{ steps.push.outputs.digest }}
         run: |
-          cosign sign --yes \
-            ${{ env.REGISTRY }}/${{ env.ORG }}/eido-media-prep@${{ steps.push.outputs.digest }}
+          set -euo pipefail
+          signed=0
+          for wait in 0 20 60; do
+            if [ "$wait" -gt 0 ]; then
+              echo "::warning::cosign sign failed for ${IMAGE_REF} (transient OIDC/Fulcio/Rekor?); retrying in ${wait}s..."
+              sleep "$wait"
+            fi
+            if cosign sign --yes "${IMAGE_REF}"; then
+              signed=1
+              break
+            fi
+          done
+          if [ "$signed" -ne 1 ]; then
+            echo "::error::cosign sign failed 3 times for ${IMAGE_REF}."
+            echo "::error::The image was BUILT AND PUSHED but is NOT signed, so the eido"
+            echo "::error::namespace's verify-image-signatures Kyverno policy will admission-deny it."
+            echo "::error::Rerun the failed jobs (gh run rerun <run-id> --failed)."
+            exit 1
+          fi
 
   # ── Mirror third-party images into ghcr.io/madfam-org ───────────────────────
   # Kyverno denies docker.io images in application namespaces (admission
@@ -348,7 +447,28 @@ jobs:
             # NotFound for the index digest the deployment pins.
             docker buildx imagetools create --tag "$TARGET:7-alpine" "redis@$REDIS_DIGEST"
           fi
-          cosign sign --yes "$TARGET@$REDIS_DIGEST"
+          # Retry the sign call: GitHub's OIDC endpoint transiently returns
+          # non-JSON ("invalid character 'u' looking for beginning of value"),
+          # which killed crea-frontend run 33010085743 on 2026-08-26.
+          IMAGE_REF="$TARGET@$REDIS_DIGEST"
+          signed=0
+          for wait in 0 20 60; do
+            if [ "$wait" -gt 0 ]; then
+              echo "::warning::cosign sign failed for ${IMAGE_REF} (transient OIDC/Fulcio/Rekor?); retrying in ${wait}s..."
+              sleep "$wait"
+            fi
+            if cosign sign --yes "${IMAGE_REF}"; then
+              signed=1
+              break
+            fi
+          done
+          if [ "$signed" -ne 1 ]; then
+            echo "::error::cosign sign failed 3 times for ${IMAGE_REF}."
+            echo "::error::The mirrored redis digest is NOT signed, so the eido namespace's"
+            echo "::error::verify-image-signatures Kyverno policy will admission-deny it."
+            echo "::error::Rerun the failed jobs (gh run rerun <run-id> --failed)."
+            exit 1
+          fi
 
   # ── Deploy (GitOps) ──────────────────────────────────────────────────────────
   # Pins the three image digests directly into the deployment manifests in ONE
@@ -367,6 +487,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Commit image digests
+        id: pin
         run: |
           git config user.name "madfam-bot"
           git config user.email "bot@madfam.dev"
@@ -403,3 +524,16 @@ jobs:
           done
           echo "::warning::api.eido.cam did not answer within ~7 min (first deploy: NS propagation or ArgoCD interval may still be settling)"
           exit 1
+
+      # Loud-stale guard (2026-08-26 crea-frontend OIDC incident): a build that
+      # pushes an image but dies before the digest lands leaves main green while
+      # the cluster keeps the old build. Name that failure mode explicitly.
+      # Note this runs only if the deploy job itself started; if a build job's
+      # cosign sign failed, deploy is skipped and its own red is the signal.
+      - name: Fail loudly if images pushed but not pinned
+        if: always()
+        run: |
+          if [ "${{ steps.pin.outcome }}" != "success" ]; then
+            echo "::error title=Image pushed but NOT pinned/deployed::The eido images for ${{ github.sha }} were built and pushed to GHCR, but the digest pin commit did not complete. ArgoCD was never handed a new digest, so THE LIVE HOST IS STILL SERVING THE PREVIOUS BUILD even though this commit is green on main. Rerun the failed jobs (gh run rerun ${{ github.run_id }} --failed)."
+            exit 1
+          fi
