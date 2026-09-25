@@ -12,12 +12,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc libpq-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python deps into a prefix we can copy
+# Install Python deps into a prefix we can copy.
+# sqlalchemy is capped <2.1: 2.1 no longer installs greenlet by default, and
+# without it every `sqlalchemy.ext.asyncio` import fails at startup. Keep this
+# pin in step with apps/api/pyproject.toml.
 COPY pyproject.toml .
 RUN pip install --no-cache-dir --prefix=/install hatchling && \
     pip install --no-cache-dir --prefix=/install \
     fastapi uvicorn[standard] pydantic pydantic-settings \
-    sqlalchemy asyncpg alembic redis httpx boto3 \
+    "sqlalchemy>=2.0.0,<2.1" asyncpg alembic redis httpx boto3 \
     python-multipart python-jose[cryptography] \
     prometheus-client
 
