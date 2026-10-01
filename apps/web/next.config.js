@@ -9,8 +9,13 @@ const nextConfig = {
   // uvicorn --proxy-headers, the browser now reaches the API in one request.
   skipTrailingSlashRedirect: true,
 
+  // Nothing in the app uses next/image, so the built-in optimizer is turned
+  // off and /_next/image answers 404. remotePatterns stays as an explicit
+  // allow-list (HTTPS, CDN host, default port) in case optimization is ever
+  // enabled again.
   images: {
-    domains: ["cdn.eido.cam", "localhost"],
+    unoptimized: true,
+    remotePatterns: [{ protocol: "https", hostname: "cdn.eido.cam", port: "" }],
   },
 
   async rewrites() {
