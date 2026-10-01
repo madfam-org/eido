@@ -18,7 +18,7 @@ jobs:
   # ── Lint & Test ──────────────────────────────────────────────────────────────
   test-api:
     name: API — Lint & Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: apps/api
@@ -44,7 +44,7 @@ jobs:
 
   test-services:
     name: Services — Pipeline Stage Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -66,7 +66,7 @@ jobs:
 
   test-web:
     name: Web — Lint & Build Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: apps/web
@@ -94,7 +94,7 @@ jobs:
   # ── Build & Push Images ──────────────────────────────────────────────────────
   build-api:
     name: Build API Image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [test-api]
     if: github.ref == 'refs/heads/main'
     permissions:
@@ -175,7 +175,7 @@ jobs:
 
   build-web:
     name: Build Web Image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [test-web]
     if: github.ref == 'refs/heads/main'
     permissions:
@@ -254,7 +254,7 @@ jobs:
 
   build-orchestration:
     name: Build Orchestration Image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
@@ -335,7 +335,7 @@ jobs:
   # is what makes an uploaded video or zip usable and georeferenced at all.
   build-media-prep:
     name: Build Media-Prep Image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
@@ -417,7 +417,7 @@ jobs:
   # (same manifest, new repo), so redis.yaml pins the identical sha.
   mirror-redis:
     name: Mirror redis to GHCR
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: github.ref == 'refs/heads/main'
     permissions:
       packages: write
@@ -478,7 +478,7 @@ jobs:
   # policy both inspect raw manifests. No ENCLII_TOKEN needed.
   deploy:
     name: Pin digests (ArgoCD deploys)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [build-api, build-web, build-orchestration]
     if: github.ref == 'refs/heads/main'
     permissions:
