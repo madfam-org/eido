@@ -2,7 +2,7 @@
 **Domains:** `eido.cam` (Product/Gallery) | `eidocam.com` (Redirect)
 **Entity:** Innovaciones MADFAM SAS de CV
 
-## Current Status (2026-10-01)
+## Current Status (2026-10-02)
 
 Eido is a **working shell with a real georeference path and no reconstruction**.
 Read Sections 1–4 below as vision; this section is the truth.
@@ -13,7 +13,7 @@ Read Sections 1–4 below as vision; this section is the truth.
   digest-pins; ArgoCD reconciles). Live health checks were recorded in the
   2026-07-10 go-live runbook (internal-devops); they are **not** re-verified in
   this README, so treat deployment state as "last known good", not as proof.
-- A test suite exists and gates CI: 20 API tests, 30 pipeline-stage tests and
+- A test suite exists and gates CI: 42 API tests, 30 pipeline-stage tests and
   a 3-test guard on `apps/web/next.config.js` (see
   [Web stack](#web-stack-and-security-invariants)).
 - **Georeference works end to end in code.** `services/media-prep` (stage 0,
@@ -38,6 +38,9 @@ Read Sections 1–4 below as vision; this section is the truth.
   libraries (`r3f-splat-viewer`, `eido-sdk`), and `ops/terraform`.
 - **The 3D viewer does not finish loading** (known bug, not yet fixed): see
   [Known issues](#known-issues).
+
+Everything still pending, with priorities, is in one list:
+[Roadmap → Pending work](#pending-work).
 
 > The status block this replaces was written 2026-07-04 and said "there is no
 > working product… a single-commit code skeleton… no tests, releases, or
@@ -80,14 +83,16 @@ smoke for it.
   `<Suspense>` around the scene stays on `<Loader />`. Possible fixes: self-host
   the HDR under `public/` and pass `files=`, serve it from `cdn.eido.cam`, or
   drop `<Environment>`. Widening the CSP to a third-party CDN is the weakest
-  option. This bug is documented only; it has not been fixed.
+  option. This bug is documented only; it has not been fixed. Tracked in
+  [Pending work](#pending-work).
 - `next lint` prints a deprecation notice on Next 15; it still works on 15.x.
 - `postcss@8.4.31`, pinned exactly by `next@15.5.27`, still shows up in
   `pnpm audit`. It is build-time only and not part of the standalone server.
 - The API verifies Janua tokens with PyJWT (`apps/api/src/eido_api/auth.py`):
   RS256 only, the JWKS key named by `kid`, `exp` required, 30 s leeway, and one
   rate-limited JWKS refetch on an unknown `kid`. It does not check `aud` or
-  `iss` yet, because no audience or issuer is configured for this service.
+  `iss` yet, because no audience or issuer is configured for this service. Tracked in
+  [Pending work](#pending-work).
 - Python dependency note: `sqlalchemy` is pinned `<2.1`, because 2.1 drops
   greenlet from the default install and `sqlalchemy.ext.asyncio` then fails to
   import.
@@ -233,3 +238,26 @@ curl -X POST https://api.blueprint.tube/v1/ingest/eido \
 *   **Phase 1 (MVP):** iOS LiDAR/Android app, Cloud SfM + 3DGS pipeline, Next.js WebGL gallery on `eido.cam`, Janua Auth integration.
 *   **Phase 2 (The Engineering Bridge):** Deploy the automated Splat-to-Mesh pipeline. Establish the API bridge allowing Yantra4D to pull metric-scaled meshes directly from Eido for parametric modeling.
 *   **Phase 3 (Temporal & Spatial):** Implement 4D Gaussian Splatting for dynamic motion capture. Enable georeferenced RTK drone integrations to feed city-scale tiles directly to Factlas.
+
+The phases above are the product vision. What is pending today is the list
+below.
+
+### Pending work
+
+The single, current pending-work list for this repository (verified against
+`main` on 2026-10-02). `AGENTS.md` and `llms.txt` point here. Kind is **owner**
+(a decision or provisioning step only the owner can take) or **eng**
+(engineering work).
+
+| # | Item | Why it matters | Priority | Kind | Link |
+|---|------|----------------|----------|------|------|
+| 1 | GPU capacity for reconstruction, and a runnable 3DGS stage | No capture has produced a `.spz` in production. The cluster has no GPU node, the orchestration worker shells `docker run --gpus all` from a CPU-only pod, and the 3DGS trainer calls a module that does not exist | P1 | owner (GPU capacity), eng (trainer and dispatch) | [Current Status](#current-status-2026-10-02) |
+| 2 | Provision R2 storage and the Janua service client | Uploads and the Factlas hand-off cannot complete in production without them (unprovisioned at the last recorded check, 2026-07-10) | P1 | owner | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
+| 3 | Add audience and issuer configuration for Janua token checks | The API has no audience or issuer setting yet; once Janua's client for eido is registered, `aud` and `iss` should be required | P2 | owner (client and audience), eng (settings and tests) | #27, [janua `ISSUER_AND_JWKS.md`](https://github.com/madfam-org/janua/blob/main/docs/reference/ISSUER_AND_JWKS.md) |
+| 4 | Self-host the viewer's HDR environment map | `/capture/[id]` stays on its loading fallback because the CSP blocks drei's third-party HDR; serve it from `public/` or `cdn.eido.cam` rather than widening the CSP | P2 | eng | [Known issues](#known-issues) |
+| 5 | Re-verify production health | Deployment state in this README is "last known good" from 2026-07-10, not re-checked | P2 | owner | [Current Status](#current-status-2026-10-02) |
+| 6 | Component tests for `apps/web` | Its only test is the image-optimizer config guard | P3 | eng | `apps/web/tests/` |
+| 7 | A live smoke for `/_next/image` → 404 | The invariant is tested in config and was checked once against a standalone build (#25), not after each deploy | P3 | eng | [Web stack](#web-stack-and-security-invariants) |
+| 8 | Replace `next lint` with the ESLint CLI | Deprecated on Next 15, gone in Next 16 | P3 | eng | — |
+| 9 | Decide on the unbuilt parts of Section 5 | The mobile capture apps, the `packages/` libraries and `ops/terraform` do not exist | P3 | owner | [Current Status](#current-status-2026-10-02) |
+

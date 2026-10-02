@@ -1,0 +1,40 @@
+# Eido
+
+Compact LLM context index for this repository. Reality capture: photo/video
+uploads → media-prep → COLMAP SfM → 3D Gaussian Splatting → mesh/`.spz`
+artifacts → WebGL gallery at eido.cam. Pre-alpha; read the status before
+concluding anything.
+
+## Read first
+
+- `AGENTS.md` — canonical agent operating instructions.
+- `README.md` → "Current Status" — what runs and what does not. Sections 1–4 are
+  vision.
+- `README.md` → "9. Roadmap" → "Pending work" — the single pending-work list
+  (priority, owner vs engineering).
+- `docs/DEPLOYMENT.md` — deployment and provisioning runbook.
+
+## Key facts (2026-10-02)
+
+- Web: Next.js 15.5.27 + React 19, React Three Fiber 9, drei 10. Image
+  optimizer off with an exact `remotePatterns` allow-list; guarded by
+  `apps/web/tests/next-config.test.mjs`.
+- API: FastAPI in `apps/api`. Janua tokens verified with PyJWT: key by `kid`,
+  RS256 only, `exp` required, 30 s leeway, one rate-limited JWKS re-fetch on an
+  unknown `kid` (#27). Audience and issuer configuration is a pending item.
+- Georegistration is eido's concern, not Factlas's: `services/media-prep` reads
+  GPS EXIF and DJI SRT telemetry, `colmap-sfm` aligns to those priors. The
+  hand-off contract is `apps/api/contracts/observation.v1.json`.
+- Deploys: every push to `main` builds the images, then CI commits digest pins
+  under `infra/k8s/production/`; ArgoCD reconciles.
+
+## Verification
+
+- API: `cd apps/api && ruff check src/ && mypy src/eido_api/ --ignore-missing-imports && pytest tests/`
+- Pipeline stages: `pytest services/spz-compress/tests/ services/media-prep/tests/`
+- Web: `cd apps/web && pnpm lint && pnpm tsc --noEmit && pnpm test`
+
+## Production operations
+
+Routine production operations are Enclii-first. Use Enclii web, API, or CLI
+before raw infrastructure tools.
