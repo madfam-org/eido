@@ -92,8 +92,11 @@ Two distinctions the code depends on:
   `/capture/[id]` stays on its `<Loader />` fallback. Fix it by self-hosting
   the HDR, not by allowing the third-party origin in the CSP. Details are in
   `README.md` → Known issues.
-- API dependency notes: `sqlalchemy` is pinned `<2.1`. Token verification is
-  still `python-jose`, not PyJWT; porting it is open.
+- API dependency notes: `sqlalchemy` is pinned `<2.1`. Token verification uses
+  PyJWT (`apps/api/src/eido_api/auth.py`): the JWKS key is picked by `kid`,
+  `["RS256"]` only, `exp` required, 30 s leeway, and an unknown `kid` refetches
+  the JWKS once (at most once per 60 s). `aud` and `iss` are not checked; no
+  audience or issuer is configured for this service.
 
 ## Repo entrypoints
 
@@ -117,7 +120,7 @@ Two distinctions the code depends on:
 ## Related repositories and contracts
 
 - Janua JWKS, issuer and audience rules:
-  https://github.com/madfam-org/janua/blob/main/docs/guides/ECOSYSTEM_INTEGRATION.md
+  https://github.com/madfam-org/janua/blob/main/docs/reference/ISSUER_AND_JWKS.md
   · M2M service tokens:
   https://github.com/madfam-org/janua/blob/main/docs/service-tokens.md
 - Enclii onboarding, GitOps, signed digests and Kyverno policies:

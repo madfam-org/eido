@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir --prefix=/install hatchling && \
     pip install --no-cache-dir --prefix=/install \
     fastapi uvicorn[standard] pydantic pydantic-settings \
     "sqlalchemy>=2.0.0,<2.1" asyncpg alembic redis httpx boto3 \
-    python-multipart python-jose[cryptography] \
+    python-multipart "pyjwt[crypto]>=2.15.1" \
     prometheus-client
 
 # Copy source

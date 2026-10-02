@@ -84,8 +84,10 @@ smoke for it.
 - `next lint` prints a deprecation notice on Next 15; it still works on 15.x.
 - `postcss@8.4.31`, pinned exactly by `next@15.5.27`, still shows up in
   `pnpm audit`. It is build-time only and not part of the standalone server.
-- The API still verifies Janua tokens with `python-jose` (`apps/api/src/eido_api/auth.py`).
-  The fleet is moving to PyJWT; eido has not been ported yet.
+- The API verifies Janua tokens with PyJWT (`apps/api/src/eido_api/auth.py`):
+  RS256 only, the JWKS key named by `kid`, `exp` required, 30 s leeway, and one
+  rate-limited JWKS refetch on an unknown `kid`. It does not check `aud` or
+  `iss` yet, because no audience or issuer is configured for this service.
 - Python dependency note: `sqlalchemy` is pinned `<2.1`, because 2.1 drops
   greenlet from the default install and `sqlalchemy.ext.asyncio` then fails to
   import.
@@ -94,7 +96,7 @@ smoke for it.
 
 - **Janua (identity):** the API verifies RS256 tokens against Janua's JWKS.
   Issuer, audience and `kid` rules:
-  [janua `docs/guides/ECOSYSTEM_INTEGRATION.md`](https://github.com/madfam-org/janua/blob/main/docs/guides/ECOSYSTEM_INTEGRATION.md).
+  [janua `docs/reference/ISSUER_AND_JWKS.md`](https://github.com/madfam-org/janua/blob/main/docs/reference/ISSUER_AND_JWKS.md).
   Service-to-service tokens for hand-offs:
   [janua `docs/service-tokens.md`](https://github.com/madfam-org/janua/blob/main/docs/service-tokens.md).
 - **Enclii (deploy platform):** onboarding and the GitOps/ArgoCD model:
