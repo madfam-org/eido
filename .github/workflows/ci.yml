@@ -91,6 +91,11 @@ jobs:
       - name: Type check
         run: pnpm tsc --noEmit
 
+      # Image-optimizer invariant (GHSA-2xp9-vwfh-vxw4): unoptimized, exact
+      # remotePatterns, no next/image imports. Node's built-in runner, no deps.
+      - name: Config guard (next.config.js)
+        run: pnpm test
+
   # ── Build & Push Images ──────────────────────────────────────────────────────
   build-api:
     name: Build API Image

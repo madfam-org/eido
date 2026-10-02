@@ -2,7 +2,7 @@
 **Domains:** `eido.cam` (Product/Gallery) | `eidocam.com` (Redirect)
 **Entity:** Innovaciones MADFAM SAS de CV
 
-## Current Status (2026-08-04)
+## Current Status (2026-10-01)
 
 Eido is a **working shell with a real georeference path and no reconstruction**.
 Read Sections 1–4 below as vision; this section is the truth.
@@ -13,7 +13,9 @@ Read Sections 1–4 below as vision; this section is the truth.
   digest-pins; ArgoCD reconciles). Live health checks were recorded in the
   2026-07-10 go-live runbook (internal-devops); they are **not** re-verified in
   this README, so treat deployment state as "last known good", not as proof.
-- A test suite exists and gates CI: 20 API tests and 30 pipeline-stage tests.
+- A test suite exists and gates CI: 20 API tests, 30 pipeline-stage tests and
+  a 3-test guard on `apps/web/next.config.js` (see
+  [Web stack](#web-stack-and-security-invariants)).
 - **Georeference works end to end in code.** `services/media-prep` (stage 0,
   CPU-only) extracts zip archives, decodes video to frames with ffmpeg, and
   reads the position the media already carries — GPS EXIF from stills, DJI SRT
@@ -34,14 +36,76 @@ Read Sections 1–4 below as vision; this section is the truth.
 - **Not built**, despite the repo structure in Section 5: the iOS/Android
   capture apps (`apps/mobile-ios`, `apps/mobile-android`), the `packages/`
   libraries (`r3f-splat-viewer`, `eido-sdk`), and `ops/terraform`.
-- The Quickstart in Section 6 references a different repository URL and sample
-  data that do not exist here; it cannot currently be followed.
+- **The 3D viewer does not finish loading** (known bug, not yet fixed): see
+  [Known issues](#known-issues).
 
 > The status block this replaces was written 2026-07-04 and said "there is no
 > working product… a single-commit code skeleton… no tests, releases, or
 > deployments." That had been false for a month. Understating is a truthfulness
 > failure in the same way overstating is: it teaches readers the status block is
 > not worth reading.
+
+## Web stack and security invariants
+
+`apps/web` runs **Next.js 15.5.27 on React 19** (19.3.0 in the lockfile), with
+`@react-three/fiber` 9 and `@react-three/drei` 10 (#25, 2026-10-01). It moved
+from Next 14.2.35 (#22), whose remaining advisories have no 14.x fix.
+`@react-three/postprocessing` was removed because nothing imported it. All
+pages are client components, so the Next 15 async request APIs did not touch
+`src/`. Next 15's App Router renders with its own bundled React; the installed
+`react` mostly drives typings and peer resolution.
+
+**Image optimizer (GHSA-2xp9-vwfh-vxw4), a security invariant:**
+
+- `images.unoptimized: true` in `apps/web/next.config.js`; nothing uses
+  `next/image`.
+- `images.remotePatterns` is the exact allow-list
+  `[{ protocol: "https", hostname: "cdn.eido.cam", port: "" }]`, with no
+  `domains` list.
+- `/_next/image` answers **404** for any `url`, so the web pod is never an
+  image proxy.
+
+`apps/web/tests/next-config.test.mjs` enforces the first two and fails if any
+file under `src/` imports `next/image`. It runs with Node's built-in runner
+(`cd apps/web && pnpm test`) in the CI job "Web — Lint & Build Check". The 404
+itself was verified against the standalone build in #25; there is no live
+smoke for it.
+
+## Known issues
+
+- **3D viewer stuck on its loading fallback.** `/capture/[id]` renders drei's
+  `<Environment preset="studio" />`. drei fetches that HDR from
+  `https://raw.githack.com/pmndrs/drei-assets/…`, but the CSP `connect-src` in
+  `next.config.js` does not allow that origin. The HDR never loads, and the
+  `<Suspense>` around the scene stays on `<Loader />`. Possible fixes: self-host
+  the HDR under `public/` and pass `files=`, serve it from `cdn.eido.cam`, or
+  drop `<Environment>`. Widening the CSP to a third-party CDN is the weakest
+  option. This bug is documented only; it has not been fixed.
+- `next lint` prints a deprecation notice on Next 15; it still works on 15.x.
+- `postcss@8.4.31`, pinned exactly by `next@15.5.27`, still shows up in
+  `pnpm audit`. It is build-time only and not part of the standalone server.
+- The API still verifies Janua tokens with `python-jose` (`apps/api/src/eido_api/auth.py`).
+  The fleet is moving to PyJWT; eido has not been ported yet.
+- Python dependency note: `sqlalchemy` is pinned `<2.1`, because 2.1 drops
+  greenlet from the default install and `sqlalchemy.ext.asyncio` then fails to
+  import.
+
+## Related repositories and contracts
+
+- **Janua (identity):** the API verifies RS256 tokens against Janua's JWKS.
+  Issuer, audience and `kid` rules:
+  [janua `docs/guides/ECOSYSTEM_INTEGRATION.md`](https://github.com/madfam-org/janua/blob/main/docs/guides/ECOSYSTEM_INTEGRATION.md).
+  Service-to-service tokens for hand-offs:
+  [janua `docs/service-tokens.md`](https://github.com/madfam-org/janua/blob/main/docs/service-tokens.md).
+- **Enclii (deploy platform):** onboarding and the GitOps/ArgoCD model:
+  [`docs/cli/commands/onboard.md`](https://github.com/madfam-org/enclii/blob/main/docs/cli/commands/onboard.md),
+  [`docs/infrastructure/GITOPS.md`](https://github.com/madfam-org/enclii/blob/main/docs/infrastructure/GITOPS.md),
+  [`docs/runbooks/SIGNED_GITOPS_DIGESTS.md`](https://github.com/madfam-org/enclii/blob/main/docs/runbooks/SIGNED_GITOPS_DIGESTS.md)
+  and the signature/digest admission policies in
+  [`docs/infrastructure/KYVERNO_POLICIES.md`](https://github.com/madfam-org/enclii/blob/main/docs/infrastructure/KYVERNO_POLICIES.md).
+- **Factlas (located observations):** eido's side of the contract is
+  [`apps/api/contracts/observation.v1.json`](apps/api/contracts/observation.v1.json),
+  pinned by `apps/api/tests/test_observation_contract.py`.
 
 ## 1. Vision & Philosophy
 Eido is the sovereign optical sensor and spatial gallery of the MADFAM ecosystem. Derived from *Eidos* (the classical concept of pure, ideal form), the platform operates on a single truth: to extract the exact, metric geometry of a physical object from the noise of reality. 
@@ -96,7 +160,8 @@ Eido maintains strict architectural isolation to prevent monolithic bloat, passi
 │   ├── media-prep/          # Stage 0 (CPU): zip/video → frames, GPS EXIF + DJI SRT → geo priors
 │   ├── colmap-sfm/          # Structure-from-Motion alignment + GPS georegistration
 │   ├── gaussian-splatting/  # CUDA kernels for 3DGS training 
-│   └── splat-to-mesh/       # Poisson surface reconstruction & material extraction
+│   ├── splat-to-mesh/       # Poisson surface reconstruction & material extraction
+│   └── spz-compress/        # Pure-numpy SPZ v2 encoder (pipeline stage 4)
 ├── packages/
 │   ├── r3f-splat-viewer/    # Internal R3F splat rendering library
 │   └── eido-sdk/            # API clients for Yantra4D, Janua, and Blueprint Harvester
@@ -109,26 +174,35 @@ Eido maintains strict architectural isolation to prevent monolithic bloat, passi
 └── README.md
 ```
 
-## 6. Quickstart (Local Ingestion & Testing)
-**Prereqs:** Node.js 18+, Docker, AWS CLI configured.
+## 6. Quickstart (local development)
+**Prereqs:** Node.js 20 and pnpm 9 (`packageManager: pnpm@9.0.0`), Python 3.11,
+and Docker for the compose stack.
 
 ```bash
-# 1) Clone the repository
-git clone https://gitlab.com/madfam/eido-cloud.git
-cd eido-cloud
-
-# 2) Configure environment (link to Janua auth and Blueprint Harvester)
+git clone https://github.com/madfam-org/eido.git && cd eido
 cp .env.example .env
 
-# 3) Boot the local web viewer and mock processing queue
-make dev.up
+# Web (Next.js 15) on :3000
+pnpm install && make dev.web
 
-# 4) Submit a test dataset to the local ingestion pipeline
-make test.ingest dataset=./sample-data/mechanical-bracket/
+# API (FastAPI) on :8000
+cd apps/api && pip install -e ".[dev]" && cd ../.. && make dev.api
 
-# 5) Open the portfolio gallery
-open http://localhost:3000/portfolio/local-dev
+# Or the whole stack in containers
+make up
 ```
+
+Gates, the same as CI:
+
+```bash
+cd apps/api && ruff check src/ && mypy src/eido_api/ --ignore-missing-imports && pytest tests/
+pytest services/spz-compress/tests/ services/media-prep/tests/
+cd apps/web && pnpm lint && pnpm tsc --noEmit && pnpm test
+```
+
+Capture mutations need a Janua bearer token, so `make ingest` only works
+against an API that is configured with Janua. No sample dataset ships with
+this repo.
 
 ## 7. APIs & Ecosystem Handoff
 Internal syndication webhook fired from Eido to Blueprint Harvester upon successful processing:
