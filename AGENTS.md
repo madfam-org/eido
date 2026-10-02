@@ -62,15 +62,38 @@ Two distinctions the code depends on:
 
 - CI (`.github/workflows/ci.yml`) builds the three images, cosign-signs them
   (keyless, GH OIDC — the `eido` namespace enforces signature verification),
-  and pins digests into `infra/k8s/production/kustomization.yaml` in one
-  commit. ArgoCD (registered via `enclii onboard`) reconciles that directory.
-  CI holds no cluster credentials.
+  and pins the digests into the raw `infra/k8s/production/*-deployment.yaml`
+  files (not a kustomization `images:` block) in one `[skip ci]` commit.
+  ArgoCD (registered via `enclii onboard`) reconciles that directory. CI holds
+  no cluster credentials. Every merge to `main` rebuilds and redeploys all
+  three services, docs-only merges included (there are no path filters).
+- GitHub-hosted jobs are pinned to `ubuntu-24.04` (#24), ahead of
+  `ubuntu-latest` moving to Ubuntu 26 on 2026-10-19. Do not switch them back to
+  `ubuntu-latest`.
 - `enclii.yaml` registers the services with Enclii (`services-sync`);
   `infra/k8s/production/` is the deployed truth. Keep both in sync when
   changing ports, probes, or resources.
 - One-time provisioning: `ops/provision.sh` (as-built 2026-07-10). Domains:
   eido.cam + api.eido.cam via Enclii tunnel routes; cdn.eido.cam is an R2
   custom domain, never an Enclii route.
+
+## Web stack and the image-optimizer invariant
+
+- `apps/web` is Next.js 15.5.27 + React 19 (19.3.0 in the lockfile),
+  `@react-three/fiber` 9, `@react-three/drei` 10 (#25). Any R3F/drei bump must
+  stay inside fiber 9.8's peer range (`react >=19 <19.4`).
+- **Security invariant (GHSA-2xp9-vwfh-vxw4):** `images.unoptimized: true`, an
+  exact `remotePatterns` allow-list (`https://cdn.eido.cam`, default port), no
+  `domains`, and `/_next/image` answers 404. Nothing may import `next/image`
+  without revisiting this. Enforced by `apps/web/tests/next-config.test.mjs`
+  (`pnpm test`, CI step "Config guard").
+- **Known bug, not yet fixed:** the CSP `connect-src` blocks drei's
+  `<Environment preset="studio">` HDR (fetched from `raw.githack.com`), so
+  `/capture/[id]` stays on its `<Loader />` fallback. Fix it by self-hosting
+  the HDR, not by allowing the third-party origin in the CSP. Details are in
+  `README.md` → Known issues.
+- API dependency notes: `sqlalchemy` is pinned `<2.1`. Token verification is
+  still `python-jose`, not PyJWT; porting it is open.
 
 ## Repo entrypoints
 
@@ -85,5 +108,23 @@ Two distinctions the code depends on:
 ## Verification
 
 - API: `cd apps/api && ruff check src/ && mypy src/eido_api/ --ignore-missing-imports && pytest tests/`
-- Web: `cd apps/web && pnpm lint && pnpm tsc --noEmit`
+- Pipeline stages: `pytest services/spz-compress/tests/ services/media-prep/tests/`
+- Web: `cd apps/web && pnpm lint && pnpm tsc --noEmit && pnpm test`
+- No test is skipped or marked flaky. `apps/web` has no component tests; its
+  only test is the config guard.
 - Prod: `curl https://api.eido.cam/health` and `https://eido.cam/api/health`
+
+## Related repositories and contracts
+
+- Janua JWKS, issuer and audience rules:
+  https://github.com/madfam-org/janua/blob/main/docs/guides/ECOSYSTEM_INTEGRATION.md
+  · M2M service tokens:
+  https://github.com/madfam-org/janua/blob/main/docs/service-tokens.md
+- Enclii onboarding, GitOps, signed digests and Kyverno policies:
+  https://github.com/madfam-org/enclii/blob/main/docs/cli/commands/onboard.md
+  · https://github.com/madfam-org/enclii/blob/main/docs/infrastructure/GITOPS.md
+  · https://github.com/madfam-org/enclii/blob/main/docs/runbooks/SIGNED_GITOPS_DIGESTS.md
+  · https://github.com/madfam-org/enclii/blob/main/docs/infrastructure/KYVERNO_POLICIES.md
+- Factlas observation hand-off: eido's side is
+  `apps/api/contracts/observation.v1.json`, pinned by
+  `apps/api/tests/test_observation_contract.py`.

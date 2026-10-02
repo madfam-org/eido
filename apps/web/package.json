@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "vitest"
+    "test": "node --test tests/"
   },
   "dependencies": {
     "@react-three/fiber": "^9.8.1",

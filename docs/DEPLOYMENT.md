@@ -1,6 +1,6 @@
 # Eido Deployment & Provisioning
 
-> Last Updated: 2026-07-10
+> Last Updated: 2026-10-01
 >
 > Enclii-first. Every production mutation goes through the Enclii web/API/CLI;
 > the raw Cloudflare/Porkbun calls in `ops/provision.sh` are one-time platform
@@ -14,9 +14,11 @@ Two layers, very different states:
   the three services; `infra/k8s/production/` carries the deployed manifests
   (ArgoCD-reconciled); `ops/provision.sh` is the as-built provisioning record.
   The API and web **shells** go live with green CI on `main`.
-- **Product — pre-alpha (~15–20%).** The web 3D viewer is a placeholder, and the
-  capture pipeline does not yet produce output (the 3DGS stage is a stub and the
-  `.spz` compression step is missing), so captures never reach `READY`. Bringing
+- **Product — pre-alpha (~15–20%).** The web viewer decodes `.spz` and `.glb`
+  (MVP, see Gaps #3), but it is stuck on its loading fallback because of a CSP
+  bug (see [Web image and CSP posture](#web-image-and-csp-posture)). The capture
+  pipeline does not yet produce output (the 3DGS stage is a stub and there is
+  no GPU node), so captures never reach `READY`. Bringing
   a *working* product live is engineering beyond provisioning — see
   [Gaps](#gaps-blocking-a-working-product).
 
@@ -41,12 +43,34 @@ Janua (OIDC/JWKS), Selva (inference), Dhanam (entitlements), Vast.ai (GPU).
 
 CI builds the three images, **cosign-signs** them (keyless, GH Actions OIDC —
 the `eido` namespace enforces `verify-image-signatures`), then pins all three
-digests into `infra/k8s/production/kustomization.yaml` in a single commit.
-ArgoCD (registered by `enclii onboard`) reconciles that directory onto the
-cluster. CI holds **no cluster credentials** — there is no `ENCLII_TOKEN`.
+digests into the raw `infra/k8s/production/{api,web,orchestration}-deployment.yaml`
+files in a single commit. The digests are not in a kustomization `images:`
+block, because the Enclii onboarding gate and Kyverno's `require-image-digest`
+both inspect raw manifests. ArgoCD (registered by `enclii onboard`) reconciles
+that directory onto the cluster. CI holds **no cluster credentials**; there is
+no `ENCLII_TOKEN`.
 
-The digest-pin commit is excluded from CI triggers (`paths-ignore`), which
-breaks the build→pin→build loop.
+The digest-pin commit carries `[skip ci]` in its message, which breaks the
+build→pin→build loop. There are no path filters, so **every merge to `main`
+rebuilds and redeploys all three services**, docs-only merges included. CI
+also builds and signs `eido-media-prep` and mirrors the pinned redis digest
+to GHCR, but it does not pin either of them.
+
+GitHub-hosted jobs run on `ubuntu-24.04` (#24), ahead of `ubuntu-latest`
+moving to Ubuntu 26 on 2026-10-19.
+
+## Web image and CSP posture
+
+- **Image optimizer off (GHSA-2xp9-vwfh-vxw4, #23):** `images.unoptimized: true`,
+  `remotePatterns` is exactly `https://cdn.eido.cam` on the default port, and
+  `/_next/image` answers 404. `apps/web/tests/next-config.test.mjs` guards it
+  in CI. To spot-check production:
+  `curl -s -o /dev/null -w '%{http_code}\n' 'https://eido.cam/_next/image?url=%2Ficon.svg&w=64&q=75'`
+  should print `404`.
+- **Known bug:** the CSP `connect-src` does not allow `raw.githack.com`, where
+  drei's `<Environment preset="studio">` fetches its HDR, so the capture viewer
+  never leaves its loading fallback. Fix it by self-hosting the HDR, not by
+  widening the CSP.
 
 ## Provisioning (one-shot, as-built 2026-07-10)
 
