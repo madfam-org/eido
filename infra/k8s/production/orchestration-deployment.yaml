@@ -29,7 +29,7 @@ spec:
         - name: ghcr-credentials
       containers:
         - name: orchestration
-          image: ghcr.io/madfam-org/eido-orchestration@sha256:c25166e0c9a2a2dbc850a9cd3ba79d4edd261d6b4e8e0a825f9ff0aa762826b6
+          image: ghcr.io/madfam-org/eido-orchestration@sha256:b0c30ac76f1594242d2edf59963d8b7cb987ac92a1523e1fe353651874c2db52
           # Pure Redis-queue worker: no HTTP server, so no httpGet probes.
           # Liveness = can it still reach its queue.
           env:
