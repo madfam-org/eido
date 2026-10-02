@@ -98,9 +98,16 @@ Two distinctions the code depends on:
   the JWKS once (at most once per 60 s). `aud` and `iss` are not checked; no
   audience or issuer is configured for this service.
 
+## Pending work
+
+One list: `README.md` → "9. Roadmap" → "Pending work" (priority, owner vs
+engineering). Add or close items there only. `llms.txt` points to the same
+place.
+
 ## Repo entrypoints
 
-- `README.md` — product overview and honest status
+- `README.md` — product overview, honest status and the pending-work list
+- `llms.txt` — compact LLM context index
 - `docs/DEPLOYMENT.md` — deployment/provisioning runbook
 - `apps/api` — FastAPI (auth, captures, health) · `apps/web` — Next.js gallery
 - `services/orchestration/worker.py` — Redis-queue pipeline dispatcher
