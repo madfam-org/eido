@@ -62,8 +62,8 @@ spec:
                 name: eido-secrets
           resources:
             requests:
-              cpu: 250m
-              memory: 512Mi
+              cpu: 25m
+              memory: 272Mi
             limits:
               cpu: "1"
               memory: 1Gi
