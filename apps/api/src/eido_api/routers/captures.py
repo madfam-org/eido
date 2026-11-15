@@ -22,7 +22,13 @@ from eido_api.config import get_settings
 from eido_api.db.redis import enqueue_job
 from eido_api.db.session import get_db
 from eido_api.models import Capture, CaptureMode, CaptureStatus, User
-from eido_api.services.access import Viewer, get_optional_viewer, get_readable_capture
+from eido_api.services.access import (
+    Viewer,
+    get_actionable_capture,
+    get_optional_viewer,
+    get_readable_capture,
+    get_viewer,
+)
 from eido_api.services.provisioning import get_provisioned_user
 
 logger = logging.getLogger(__name__)
@@ -195,18 +201,14 @@ async def trigger_processing(
     capture_id: str,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_provisioned_user),
+    viewer: Viewer = Depends(get_viewer),
 ) -> dict[str, Any]:
     """
-    Enqueue a GPU processing job for this capture.
-    Called by the mobile app after S3 upload completes.
+    Enqueue a GPU processing job for this capture (owner only).
+    Called by the mobile app after S3 upload completes. 404 to anyone who
+    cannot read the capture, 403 to a reader who is not its owner.
     """
-    result = await db.execute(select(Capture).where(Capture.id == capture_id))
-    capture = result.scalar_one_or_none()
-    if not capture:
-        raise HTTPException(status_code=404, detail="Capture not found.")
-    if capture.author_id != user.id:
-        raise HTTPException(status_code=403, detail="Not the capture owner.")
+    capture = await get_actionable_capture(db, capture_id, viewer, allow_admin=False)
 
     capture.status = CaptureStatus.QUEUED
     await db.flush()
@@ -228,17 +230,13 @@ async def publish_capture(
     capture_id: str,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_provisioned_user),
+    viewer: Viewer = Depends(get_viewer),
 ) -> dict[str, Any]:
     """
-    Mark a processed capture as public and fire all ecosystem handoff webhooks.
+    Mark a processed capture as public and fire all ecosystem handoff webhooks
+    (owner only; 404 to anyone who cannot read it, 403 to other readers).
     """
-    result = await db.execute(select(Capture).where(Capture.id == capture_id))
-    capture = result.scalar_one_or_none()
-    if not capture:
-        raise HTTPException(status_code=404, detail="Capture not found.")
-    if capture.author_id != user.id:
-        raise HTTPException(status_code=403, detail="Not the capture owner.")
+    capture = await get_actionable_capture(db, capture_id, viewer, allow_admin=False)
     if capture.status != CaptureStatus.READY:
         raise HTTPException(status_code=409, detail=f"Capture is not ready (status: {capture.status}).")
 

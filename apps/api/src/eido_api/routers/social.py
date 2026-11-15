@@ -24,7 +24,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eido_api.db.session import get_db
-from eido_api.models import Capture, SocialEdge, SpatialAnnotation, User
+from eido_api.models import SocialEdge, SpatialAnnotation, User
 from eido_api.services.access import Viewer, get_optional_viewer, get_readable_capture, get_viewer
 from eido_api.services.provisioning import get_provisioned_user
 
@@ -76,13 +76,12 @@ class AnnotationResponse(BaseModel):
 @router.post("/captures/{capture_id}/like", response_model=LikeResponse)
 async def toggle_like(
     capture_id: UUID,
-    user: Annotated[User, Depends(get_provisioned_user)],
+    viewer: Annotated[Viewer, Depends(get_viewer)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> LikeResponse:
-    """Toggle like on a capture. Idempotent — call again to unlike."""
-    capture_check = await db.execute(select(Capture.id).where(Capture.id == capture_id))
-    if not capture_check.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Capture not found.")
+    """Toggle like on a capture the caller can read (404 otherwise). Call again to unlike."""
+    await get_readable_capture(db, capture_id, viewer)
+    user = viewer.user
 
     existing = await db.execute(
         select(SocialEdge).where(
@@ -149,16 +148,15 @@ async def toggle_follow(
 async def post_comment(
     capture_id: UUID,
     data: CommentCreate,
-    user: Annotated[User, Depends(get_provisioned_user)],
+    viewer: Annotated[Viewer, Depends(get_viewer)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> CommentResponse:
+    """Comment on a capture the caller can read (404 otherwise)."""
     from datetime import UTC, datetime
     from uuid import uuid4
 
-
-    capture_check = await db.execute(select(Capture.id).where(Capture.id == capture_id))
-    if not capture_check.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Capture not found.")
+    await get_readable_capture(db, capture_id, viewer)
+    user = viewer.user
 
     # Store comment text in a separate Comment model; for now reuse SocialEdge meta
     # via a tag column. A proper Comment table is defined in models.py in Phase 2.
@@ -175,7 +173,7 @@ async def post_comment(
 
     return CommentResponse(
         id=str(comment_id),
-        author_id=user.id,
+        author_id=str(user.id),
         text=data.text,
         created_at=str(now),
     )
@@ -185,8 +183,10 @@ async def post_comment(
 async def list_comments(
     capture_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    viewer: Annotated[Viewer | None, Depends(get_optional_viewer)],
 ) -> list[CommentResponse]:
-    """List comments on a capture."""
+    """List comments on a capture the caller can read (404 otherwise)."""
+    await get_readable_capture(db, capture_id, viewer)
     result = await db.execute(
         select(SocialEdge).where(
             SocialEdge.target_id == capture_id,

@@ -235,13 +235,17 @@ async def get_collection(
     )
     capture_ids = [row.capture_id for row in cc_result.fetchall()]
 
+    # Count and list only captures the caller can read; a private capture in a
+    # public collection is invisible to everyone but its owner and eido:admin.
     captures_data = []
+    readable_count = 0
     for cid in capture_ids:
-        cap_result = await db.execute(
-            select(Capture).where(Capture.id == cid, Capture.status == CaptureStatus.READY)
-        )
+        cap_result = await db.execute(select(Capture).where(Capture.id == cid))
         cap = cap_result.scalar_one_or_none()
-        if cap and can_read_capture(cap, viewer):
+        if cap is None or not can_read_capture(cap, viewer):
+            continue
+        readable_count += 1
+        if cap.status == CaptureStatus.READY:
             captures_data.append({
                 "id": str(cap.id), "title": cap.title,
                 "thumbnail_url": cap.thumbnail_url, "mode": cap.mode.value if cap.mode else "3dgs",
@@ -250,7 +254,7 @@ async def get_collection(
     return CollectionDetail(
         id=str(col.id), author_id=str(col.author_id),
         title=col.title, description=col.description,
-        is_public=col.is_public, capture_count=len(capture_ids),
+        is_public=col.is_public, capture_count=readable_count,
         cover_thumbnail_url=None, created_at=str(col.created_at),
         captures=captures_data,
     )

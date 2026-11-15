@@ -13,10 +13,9 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eido_api.auth import JanuaUser, get_current_user
 from eido_api.db.session import get_db
-from eido_api.models import Capture, EcosystemHandoff, HandoffTarget, User
-from eido_api.services.provisioning import get_provisioned_user
+from eido_api.models import EcosystemHandoff, HandoffTarget
+from eido_api.services.access import Viewer, get_actionable_capture, get_viewer
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -38,17 +37,14 @@ class RetryRequest(BaseModel):
 @router.get("/{capture_id}", response_model=list[HandoffSummary])
 async def list_handoffs(
     capture_id: UUID,
-    owner: Annotated[User, Depends(get_provisioned_user)],
-    janua: Annotated[JanuaUser, Depends(get_current_user)],
+    viewer: Annotated[Viewer, Depends(get_viewer)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[HandoffSummary]:
-    """List all ecosystem dispatch records for a capture (owner or eido:admin)."""
-    capture_result = await db.execute(select(Capture).where(Capture.id == capture_id))
-    capture = capture_result.scalar_one_or_none()
-    if not capture:
-        raise HTTPException(status_code=404, detail="Capture not found.")
-    if str(capture.author_id) != str(owner.id) and not janua.is_admin:
-        raise HTTPException(status_code=403, detail="Not the capture owner.")
+    """List all ecosystem dispatch records for a capture (owner or eido:admin).
+
+    404 to anyone who cannot read the capture, 403 to other readers.
+    """
+    await get_actionable_capture(db, capture_id, viewer, allow_admin=True)
 
     result = await db.execute(
         select(EcosystemHandoff)
@@ -74,17 +70,20 @@ async def retry_handoff(
     capture_id: UUID,
     data: RetryRequest,
     background_tasks: BackgroundTasks,
-    owner: Annotated[User, Depends(get_provisioned_user)],
-    janua: Annotated[JanuaUser, Depends(get_current_user)],
+    viewer: Annotated[Viewer, Depends(get_viewer)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    """Manually re-dispatch a failed ecosystem handoff."""
-    capture_result = await db.execute(select(Capture).where(Capture.id == capture_id))
-    capture = capture_result.scalar_one_or_none()
-    if not capture:
-        raise HTTPException(status_code=404, detail="Capture not found.")
-    if str(capture.author_id) != str(owner.id) and not janua.is_admin:
-        raise HTTPException(status_code=403, detail="Not the capture owner.")
+    """Manually re-dispatch a failed ecosystem handoff (owner or eido:admin).
+
+    Only a public capture is ever sent to another platform: publishing is what
+    releases it. A private one answers 409, to its owner and to admins alike.
+    """
+    capture = await get_actionable_capture(db, capture_id, viewer, allow_admin=True)
+    if not capture.is_public:
+        raise HTTPException(
+            status_code=409,
+            detail="This capture is private. Publish it before sending it to other platforms.",
+        )
 
     from eido_api.services.handoff import (
         _dispatch_blueprint_harvester,

@@ -188,6 +188,12 @@ async def dispatch_all_handoffs(capture_id: str) -> None:
             logger.error("dispatch_all_handoffs: capture %s not found", capture_id)
             return
 
+    # Handoffs send the title, id and artifact URLs to other platforms, so
+    # only a published (public) capture is ever dispatched.
+    if not capture.is_public:
+        logger.warning("dispatch_all_handoffs: capture %s is private; refusing to dispatch", capture_id)
+        return
+
     # Always fire: Blueprint Harvester (permanent ledger)
     await _dispatch_blueprint_harvester(capture)
 
