@@ -7,6 +7,8 @@ POST /api/v1/social/captures/{id}/comments  — post a comment
 GET  /api/v1/social/captures/{id}/comments  — list comments
 POST /api/v1/social/captures/{id}/annotate  — pin a 3D spatial annotation
 GET  /api/v1/social/captures/{id}/annotations — list spatial pins
+  (both annotation routes follow the capture read rule in services/access.py:
+   public, or owner / eido:admin; 404 otherwise)
 
 POST /api/v1/collections/                   — create collection
 GET  /api/v1/collections/{id}               — get collection
@@ -23,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eido_api.db.session import get_db
 from eido_api.models import Capture, SocialEdge, SpatialAnnotation, User
+from eido_api.services.access import Viewer, get_optional_viewer, get_readable_capture, get_viewer
 from eido_api.services.provisioning import get_provisioned_user
 
 logger = logging.getLogger(__name__)
@@ -208,17 +211,15 @@ async def list_comments(
 async def post_annotation(
     capture_id: UUID,
     data: AnnotationCreate,
-    user: Annotated[User, Depends(get_provisioned_user)],
+    viewer: Annotated[Viewer, Depends(get_viewer)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AnnotationResponse:
-    """Pin a text annotation to a 3D coordinate on a capture."""
-    capture_check = await db.execute(select(Capture.id).where(Capture.id == capture_id))
-    if not capture_check.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Capture not found.")
+    """Pin a text annotation to a 3D coordinate on a capture the caller can read."""
+    await get_readable_capture(db, capture_id, viewer)
 
     ann = SpatialAnnotation(
         capture_id=capture_id,
-        author_id=user.id,
+        author_id=viewer.user.id,
         x=data.x,
         y=data.y,
         z=data.z,
@@ -243,7 +244,9 @@ async def post_annotation(
 async def list_annotations(
     capture_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    viewer: Annotated[Viewer | None, Depends(get_optional_viewer)],
 ) -> list[AnnotationResponse]:
+    await get_readable_capture(db, capture_id, viewer)
     result = await db.execute(
         select(SpatialAnnotation)
         .where(SpatialAnnotation.capture_id == capture_id)

@@ -19,8 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eido_api.config import get_settings
 from eido_api.db.session import get_db
-from eido_api.models import Capture, CaptureStatus, User
-from eido_api.services.provisioning import get_optional_provisioned_user
+from eido_api.models import Capture, CaptureStatus
+from eido_api.services.access import Viewer, get_optional_viewer, get_readable_capture
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -73,22 +73,18 @@ async def get_download_url(
     capture_id: UUID,
     format: str = Query("glb", description="Export format: glb|obj|usdz|ply|spz"),
     db: Annotated[AsyncSession, Depends(get_db)] = None,
-    user: User | None = Depends(get_optional_provisioned_user),
+    viewer: Viewer | None = Depends(get_optional_viewer),
 ) -> DownloadResponse:
     """
     Return a pre-signed download URL for the specified format.
-    Private captures require authentication.
+    A private capture answers 404 to everyone but its owner and eido:admin.
     .ply and .obj formats require a Pro or Studio tier (Dhanam entitlement).
     """
     if format not in SUPPORTED_FORMATS:
         raise HTTPException(status_code=422, detail=f"Unsupported format. Choose from: {SUPPORTED_FORMATS}")
 
-    result = await db.execute(select(Capture).where(Capture.id == capture_id))
-    capture = result.scalar_one_or_none()
-    if not capture:
-        raise HTTPException(status_code=404, detail="Capture not found.")
-    if not capture.is_public and (not user or str(capture.author_id) != str(user.id)):
-        raise HTTPException(status_code=403, detail="Private capture — authentication required.")
+    capture = await get_readable_capture(db, capture_id, viewer)
+    user = viewer.user if viewer else None
     if capture.status != CaptureStatus.READY:
         raise HTTPException(status_code=409, detail="Capture is still processing.")
 

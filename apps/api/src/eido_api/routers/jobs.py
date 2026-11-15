@@ -1,7 +1,7 @@
 """
 Jobs Router — GPU processing job status and management.
 
-GET  /api/v1/jobs/{job_id}     — poll job status
+GET  /api/v1/jobs/{capture_id} — poll job status (public capture, or owner / eido:admin)
 GET  /api/v1/jobs/             — list jobs for current user
 PATCH /api/v1/captures/{id}/status — internal callback from orchestration worker
 """
@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from eido_api.config import get_settings
 from eido_api.db.session import get_db
 from eido_api.models import Capture, CaptureStatus, User
+from eido_api.services.access import Viewer, get_optional_viewer, get_readable_capture
 from eido_api.services.provisioning import get_provisioned_user
 
 settings = get_settings()
@@ -129,12 +130,14 @@ def _apply_geo(capture: Capture, geo: CaptureGeo) -> None:
 async def get_job_status(
     capture_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
+    viewer: Annotated[Viewer | None, Depends(get_optional_viewer)],
 ) -> JobStatusResponse:
-    """Poll processing status for a capture. Public endpoint (no auth required)."""
-    result = await db.execute(select(Capture).where(Capture.id == capture_id))
-    capture = result.scalar_one_or_none()
-    if not capture:
-        raise HTTPException(status_code=404, detail="Capture not found.")
+    """Poll processing status for a capture.
+
+    No token is needed for a public capture. A private capture answers 404 to
+    everyone but its owner and eido:admin (the response carries artifact URLs).
+    """
+    capture = await get_readable_capture(db, capture_id, viewer)
 
     stage, pct = _STATUS_STAGE_MAP.get(capture.status, ("Unknown", None))
     return JobStatusResponse(
