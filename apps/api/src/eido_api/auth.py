@@ -8,8 +8,30 @@ Per the solarpunk-foundry cross-repo conventions:
   - No HS256, no hardcoded secrets
   - Every authenticated route uses Depends(get_current_user)
 
-Janua's issuer/JWKS contract:
-  https://github.com/madfam-org/janua/blob/main/docs/reference/ISSUER_AND_JWKS.md
+Claims checked on every token (Janua's issuer/JWKS contract:
+  https://github.com/madfam-org/janua/blob/main/docs/reference/ISSUER_AND_JWKS.md):
+  - signature: RS256 with the JWKS key named by `kid`;
+  - `exp`: present and not passed (30 s leeway);
+  - `iss`: equals JANUA_ISSUER (default https://auth.madfam.io);
+  - `aud`: names one of JANUA_AUDIENCES (default `eido-api,janua.dev`);
+  - `sub`: present.
+
+Janua signs every relying party's tokens with one key, so the signature only
+proves "Janua minted this". The audience says for whom:
+  - `eido-api` is this service's own audience. A token naming it is accepted
+    as issued, except a refresh token (`type`, when present, must be "access").
+  - `janua.dev` is Janua's shared platform audience. Janua's own sign-in mints
+    a person's session token on it, and so does any OAuth client registered
+    without an audience of its own. A token accepted only because of it must
+    be a first-party session access token: `type == "access"`, no `client_id`,
+    no `scope`, not a machine (client_credentials) token, not a service
+    principal (`is_service_account`). Every token Janua issues to an OAuth
+    client carries `client_id`, so a token obtained by another application
+    cannot be replayed here.
+
+Authorization uses application roles only: Janua's `roles` claim mixes
+`<app>:<role>` roles with bare organization roles (`admin`, `owner`,
+`member`), and a bare role grants nothing in eido. See `ADMIN_ROLE`.
 """
 import logging
 import time
@@ -38,9 +60,42 @@ _JANUA_ALGORITHMS = ["RS256"]
 # PyJWT rejects an `iat` in the future (python-jose did not).
 _JANUA_LEEWAY_SECONDS = 30
 
-# python-jose accepted a token without `exp` (it never expired). `aud` and `iss`
-# are not checked here: this service has never configured an audience or issuer.
-_JANUA_REQUIRED_CLAIMS = ["exp"]
+# python-jose accepted a token without `exp` (it never expired). `iss` is
+# required and compared by PyJWT; `aud` is required and checked against the
+# allowlist in `_check_audience` (PyJWT cannot say which audience matched).
+_JANUA_REQUIRED_CLAIMS = ["exp", "iss", "aud"]
+
+# Janua's shared platform audience (its `JWT_AUDIENCE`). Tokens accepted only
+# because of it are held to the first-party session rules in `_check_audience`.
+_SHARED_SESSION_AUDIENCES = frozenset({"janua.dev"})
+
+# Application role that grants eido-wide administration. A bare `admin` is an
+# organization role in Janua and grants nothing here (owner ruling B2).
+ADMIN_ROLE = "eido:admin"
+
+# Machine (client_credentials) token markers, per janua docs/service-tokens.md.
+_TOKEN_USE_CLIENT_CREDENTIALS = "client_credentials"
+_ACTOR_TYPE_SERVICE_ACCOUNT = "service_account"
+_SERVICE_ACCOUNT_SUBJECT_PREFIX = "service-account:"
+_TOKEN_TYPE_ACCESS = "access"
+
+
+def parse_audiences(raw: str) -> frozenset[str]:
+    """Parse the comma-separated JANUA_AUDIENCES allowlist.
+
+    Fails loudly at import on an empty list (every caller would be rejected)
+    or a wildcard ("accept any audience" is what this check exists to close).
+    """
+    audiences = frozenset(a.strip() for a in raw.split(",") if a.strip())
+    if not audiences:
+        raise RuntimeError("JANUA_AUDIENCES is empty; set at least one accepted audience.")
+    if "*" in audiences:
+        raise RuntimeError("JANUA_AUDIENCES must list audiences explicitly; '*' is not allowed.")
+    return audiences
+
+
+_JANUA_ISSUER = settings.janua_issuer
+_ALLOWED_AUDIENCES = parse_audiences(settings.janua_audiences)
 
 # JWKS cache. Janua rotates its key with a hard cut, so a token naming a `kid`
 # that is not in the cached set forces one refetch before it is rejected. Forced
@@ -118,10 +173,63 @@ async def _verify_token(token: str) -> dict[str, Any]:
         token,
         key,
         algorithms=_JANUA_ALGORITHMS,
+        issuer=_JANUA_ISSUER,
         leeway=_JANUA_LEEWAY_SECONDS,
         options={"require": _JANUA_REQUIRED_CLAIMS, "verify_aud": False},
     )
+    _check_audience(payload)
     return payload
+
+
+def _token_audiences(payload: dict[str, Any]) -> list[str]:
+    aud = payload.get("aud")
+    if isinstance(aud, str):
+        return [aud]
+    if isinstance(aud, list) and all(isinstance(a, str) for a in aud):
+        return aud
+    raise InvalidTokenError("Token 'aud' is missing or malformed")
+
+
+def _is_machine_token(payload: dict[str, Any]) -> bool:
+    """Any one client_credentials marker classifies the token as a machine's."""
+    sub = payload.get("sub")
+    return (
+        payload.get("token_use") == _TOKEN_USE_CLIENT_CREDENTIALS
+        or payload.get("actor_type") == _ACTOR_TYPE_SERVICE_ACCOUNT
+        or (isinstance(sub, str) and sub.startswith(_SERVICE_ACCOUNT_SUBJECT_PREFIX))
+    )
+
+
+def _check_audience(payload: dict[str, Any]) -> None:
+    """Enforce the audience allowlist and the shared-audience session rules.
+
+    Raises:
+        InvalidTokenError: with the reason, which is logged, never returned.
+    """
+    audiences = set(_token_audiences(payload))
+    own = audiences & (_ALLOWED_AUDIENCES - _SHARED_SESSION_AUDIENCES)
+    shared = audiences & _ALLOWED_AUDIENCES & _SHARED_SESSION_AUDIENCES
+    if not own and not shared:
+        raise InvalidTokenError(f"Token audience {sorted(audiences)!r} is not accepted")
+
+    token_type = payload.get("type")
+    if own:
+        # Issued for eido: accepted as issued, but never a refresh token.
+        if token_type is not None and token_type != _TOKEN_TYPE_ACCESS:
+            raise InvalidTokenError(f"Token type {token_type!r} is not an access token")
+        return
+
+    # Accepted only because of the shared audience: first-party session only.
+    if token_type != _TOKEN_TYPE_ACCESS:
+        raise InvalidTokenError(f"Shared-audience token type {token_type!r} is not 'access'")
+    if _is_machine_token(payload):
+        raise InvalidTokenError("Machine token on the shared audience; it must name eido's audience")
+    if payload.get("is_service_account"):
+        raise InvalidTokenError("Service principal token on the shared audience")
+    if payload.get("client_id") or payload.get("scope"):
+        raise InvalidTokenError(
+            "Token issued to an OAuth client on the shared audience; it must name eido's audience"
+        )
 
 
 class JanuaUser(BaseModel):
@@ -131,6 +239,11 @@ class JanuaUser(BaseModel):
     username: str | None = None
     roles: list[str] = []
     tier: str = "free"   # Populated from Dhanam entitlement claim if present
+
+    @property
+    def is_admin(self) -> bool:
+        """True only for the `eido:admin` application role; a bare `admin` grants nothing."""
+        return ADMIN_ROLE in self.roles
 
 
 async def get_current_user(
@@ -149,8 +262,8 @@ async def get_current_user(
     )
 
     try:
-        # Key selected by `kid`, RS256 only, `exp` required, 30 s leeway.
-        # Audience is not verified (no audience is configured for this service).
+        # Key selected by `kid`, RS256 only, `exp` required, 30 s leeway,
+        # `iss` and `aud` checked (see the module docstring).
         payload = await _verify_token(token)
     except PyJWTError as exc:
         logger.warning("JWT verification failed: %s", exc)

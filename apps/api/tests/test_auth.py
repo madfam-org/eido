@@ -4,7 +4,9 @@ Real RS256 tokens are signed with throwaway keys and verified against a JWKS
 built from their public halves. Only the JWKS HTTP fetch is stubbed, so these
 tests exercise the PyJWT checks as ``get_current_user`` configures them: the
 key named by ``kid``, the fixed ``["RS256"]`` allow-list, required ``exp``, a
-30 s leeway, and one rate-limited JWKS refetch on an unknown ``kid``.
+30 s leeway, one rate-limited JWKS refetch on an unknown ``kid``, the issuer,
+the audience allowlist (default ``eido-api,janua.dev``) and the first-party
+session rules for the shared ``janua.dev`` audience.
 """
 
 import asyncio
@@ -49,8 +51,8 @@ def _claims(**overrides: Any) -> dict[str, Any]:
         "email": "user@example.com",
         "org_id": "org-1",
         "roles": ["member"],
-        "iss": "https://issuer.example.com",
-        "aud": "example-api",
+        "iss": "https://auth.madfam.io",
+        "aud": "eido-api",
         "iat": now,
         "exp": now + 900,
     }
@@ -129,10 +131,123 @@ def test_expired_within_leeway_is_accepted():
     assert _current_user(_token(iat=now - 900, exp=now - 10)).id == "user-1"
 
 
-def test_audience_and_issuer_are_not_enforced():
-    """Unchanged from python-jose: no audience or issuer is configured for eido."""
-    token = _token(aud="some-other-api", iss="https://other-issuer.example.com")
+def test_defaults_are_the_production_issuer_and_audiences():
+    assert auth._JANUA_ISSUER == "https://auth.madfam.io"
+    assert auth._ALLOWED_AUDIENCES == frozenset({"eido-api", "janua.dev"})
+
+
+def test_eido_audience_is_accepted_as_issued():
+    """A token for eido's own audience may come from an OAuth client or a machine."""
+    token = _token(client_id="eido-web", scope="openid profile", type="access")
     assert _current_user(token).id == "user-1"
+
+
+def test_eido_audience_machine_token_is_accepted():
+    token = _token(
+        sub="service-account:eido-worker",
+        token_use="client_credentials",
+        actor_type="service_account",
+        client_id="eido-worker",
+        scope="captures:write",
+    )
+    assert _current_user(token).id == "service-account:eido-worker"
+
+
+def test_eido_audience_in_a_list_is_accepted():
+    assert _current_user(_token(aud=["other-api", "eido-api"])).id == "user-1"
+
+
+def test_eido_audience_refresh_token_rejected():
+    _assert_rejected(_token(type="refresh"))
+
+
+def test_session_token_on_shared_audience_is_accepted():
+    """Janua's own sign-in: `janua.dev`, `type: access`, no client_id, no scope."""
+    assert _current_user(_token(aud="janua.dev", type="access")).id == "user-1"
+
+
+# -- issuer and audience --------------------------------------------------------
+
+
+def test_wrong_issuer_rejected():
+    _assert_rejected(_token(iss="https://other-issuer.example.com"))
+
+
+def test_issuer_with_trailing_slash_rejected():
+    _assert_rejected(_token(iss="https://auth.madfam.io/"))
+
+
+def test_missing_issuer_rejected():
+    _assert_rejected(_token(iss=None))
+
+
+def test_audience_not_in_allowlist_rejected():
+    _assert_rejected(_token(aud="some-other-api"))
+
+
+def test_missing_audience_rejected():
+    _assert_rejected(_token(aud=None))
+
+
+def test_shared_audience_with_client_id_rejected():
+    """Issued to another OAuth client that has no audience of its own."""
+    _assert_rejected(_token(aud="janua.dev", type="access", client_id="other-app"))
+
+
+def test_shared_audience_with_scope_rejected():
+    _assert_rejected(_token(aud="janua.dev", type="access", scope="openid profile"))
+
+
+def test_shared_audience_refresh_token_rejected():
+    _assert_rejected(_token(aud="janua.dev", type="refresh"))
+
+
+def test_shared_audience_without_type_rejected():
+    _assert_rejected(_token(aud="janua.dev"))
+
+
+def test_shared_audience_machine_token_rejected():
+    _assert_rejected(
+        _token(
+            aud="janua.dev",
+            type="access",
+            sub="service-account:other-app",
+            token_use="client_credentials",
+        )
+    )
+
+
+def test_shared_audience_service_account_subject_alone_rejected():
+    _assert_rejected(_token(aud="janua.dev", type="access", sub="service-account:other-app"))
+
+
+def test_shared_audience_service_principal_rejected():
+    _assert_rejected(_token(aud="janua.dev", type="access", is_service_account=True))
+
+
+@pytest.mark.parametrize("raw", ["", " , ", "eido-api,*"])
+def test_audience_allowlist_rejects_empty_and_wildcard(raw: str):
+    with pytest.raises(RuntimeError):
+        auth.parse_audiences(raw)
+
+
+def test_audience_allowlist_parses_comma_separated_values():
+    assert auth.parse_audiences(" eido-api , janua.dev ,") == frozenset({"eido-api", "janua.dev"})
+
+
+# -- roles -----------------------------------------------------------------------
+
+
+def test_bare_admin_role_is_not_eido_admin():
+    assert _current_user(_token(roles=["admin", "owner"])).is_admin is False
+
+
+def test_application_admin_role_is_eido_admin():
+    assert _current_user(_token(roles=["member", "eido:admin"])).is_admin is True
+
+
+def test_other_products_admin_role_is_not_eido_admin():
+    assert _current_user(_token(roles=["pravara-mes:admin"])).is_admin is False
 
 
 # -- key selection ---------------------------------------------------------------

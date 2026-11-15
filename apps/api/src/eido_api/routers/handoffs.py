@@ -42,12 +42,12 @@ async def list_handoffs(
     janua: Annotated[JanuaUser, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[HandoffSummary]:
-    """List all ecosystem dispatch records for a capture (owner only)."""
+    """List all ecosystem dispatch records for a capture (owner or eido:admin)."""
     capture_result = await db.execute(select(Capture).where(Capture.id == capture_id))
     capture = capture_result.scalar_one_or_none()
     if not capture:
         raise HTTPException(status_code=404, detail="Capture not found.")
-    if str(capture.author_id) != str(owner.id) and "admin" not in janua.roles:
+    if str(capture.author_id) != str(owner.id) and not janua.is_admin:
         raise HTTPException(status_code=403, detail="Not the capture owner.")
 
     result = await db.execute(
@@ -83,7 +83,7 @@ async def retry_handoff(
     capture = capture_result.scalar_one_or_none()
     if not capture:
         raise HTTPException(status_code=404, detail="Capture not found.")
-    if str(capture.author_id) != str(owner.id) and "admin" not in janua.roles:
+    if str(capture.author_id) != str(owner.id) and not janua.is_admin:
         raise HTTPException(status_code=403, detail="Not the capture owner.")
 
     from eido_api.services.handoff import (
