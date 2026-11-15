@@ -77,16 +77,23 @@ def _signing_input(header: dict[str, Any]) -> str:
     return f"{_b64(json.dumps(header).encode())}.{_b64(json.dumps(_claims()).encode())}"
 
 
-def _alg_none_token() -> str:
-    return _signing_input({"alg": "none", "typ": "JWT", "kid": "key-a"}) + "."
+def _header(alg: str, kid: str | None) -> dict[str, Any]:
+    header: dict[str, Any] = {"alg": alg, "typ": "JWT"}
+    if kid is not None:
+        header["kid"] = kid
+    return header
 
 
-def _hs256_with_public_key_token() -> str:
+def _alg_none_token(kid: str | None = "key-a") -> str:
+    return _signing_input(_header("none", kid)) + "."
+
+
+def _hs256_with_public_key_token(kid: str | None = "key-a") -> str:
     """Algorithm confusion: HS256 keyed with the published RSA public key (built by hand)."""
     secret = _KEY_A.public_key().public_bytes(
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
     )
-    signing_input = _signing_input({"alg": "HS256", "typ": "JWT", "kid": "key-a"})
+    signing_input = _signing_input(_header("HS256", kid))
     signature = hmac.new(secret, signing_input.encode(), hashlib.sha256).digest()
     return f"{signing_input}.{_b64(signature)}"
 
@@ -257,8 +264,65 @@ def test_wrong_kid_rejected():
     _assert_rejected(_token(kid="key-unknown"))
 
 
-def test_missing_kid_rejected():
-    _assert_rejected(_token(kid=None))
+# -- tokens without a `kid` (Janua's first-party session tokens carry none) ------
+
+
+def test_kidless_session_token_signed_by_published_key_is_accepted():
+    token = _token(kid=None, aud="janua.dev", type="access")
+    assert _current_user(token).id == "user-1"
+
+
+def test_kidless_eido_audience_token_signed_by_published_key_is_accepted():
+    assert _current_user(_token(kid=None)).id == "user-1"
+
+
+def test_empty_kid_is_treated_as_no_kid():
+    assert _current_user(_token(kid="", aud="janua.dev", type="access")).id == "user-1"
+
+
+def test_kidless_token_signed_by_unpublished_key_rejected():
+    _assert_rejected(_token(private_key=_KEY_UNPUBLISHED, kid=None))
+
+
+def test_kidless_token_still_held_to_the_shared_audience_rules():
+    _assert_rejected(_token(kid=None, aud="janua.dev", type="access", client_id="other-app"))
+
+
+@pytest.mark.parametrize("override", [{"use": "enc"}, {"alg": "RS512"}])
+def test_kidless_token_not_verified_against_non_signing_keys(override: dict[str, str]):
+    key = {**_jwk(_KEY_A, "key-a"), **override}
+    fetch = AsyncMock(return_value={"keys": [key]})
+    _assert_rejected(_token(kid=None), fetch)
+
+
+def test_kidless_token_verifies_against_the_second_signing_key():
+    jwks = {"keys": [_jwk(_KEY_A, "key-a"), _jwk(_KEY_B, "key-b")]}
+    fetch = AsyncMock(return_value=jwks)
+    assert _current_user(_token(private_key=_KEY_B, kid=None), fetch).id == "user-1"
+
+
+def test_kidless_token_skips_unusable_keys_and_verifies_with_a_signing_key():
+    enc = {**_jwk(_KEY_B, "key-enc"), "use": "enc"}
+    fetch = AsyncMock(return_value={"keys": [enc, _jwk(_KEY_A, "key-a")]})
+    assert _current_user(_token(kid=None), fetch).id == "user-1"
+
+
+def test_kidless_token_never_forces_a_refetch():
+    fetch = AsyncMock(return_value=_JWKS)
+    for _ in range(3):
+        _assert_rejected(_token(private_key=_KEY_UNPUBLISHED, kid=None), fetch)
+    _current_user(_token(kid=None), fetch)
+    assert fetch.await_count == 4
+    assert all(c.kwargs == {} for c in fetch.await_args_list)
+    assert auth._jwks_forced_refresh_time is None
+
+
+def test_kidless_alg_none_rejected():
+    _assert_rejected(_alg_none_token(kid=None))
+
+
+def test_kidless_hs256_signed_with_public_key_rejected():
+    _assert_rejected(_hs256_with_public_key_token(kid=None))
 
 
 def test_forged_signature_rejected():

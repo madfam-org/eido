@@ -10,7 +10,10 @@ Per the solarpunk-foundry cross-repo conventions:
 
 Claims checked on every token (Janua's issuer/JWKS contract:
   https://github.com/madfam-org/janua/blob/main/docs/reference/ISSUER_AND_JWKS.md):
-  - signature: RS256 with the JWKS key named by `kid`;
+  - signature: RS256 with the JWKS key named by `kid`; a token without a
+    `kid` (Janua's first-party session tokens carry none) is verified against
+    every published RS256 signing key (RSA, `use` absent or `sig`, `alg`
+    absent or RS256) and accepted if one verifies;
   - `exp`: present and not passed (30 s leeway);
   - `iss`: equals JANUA_ISSUER (default https://auth.madfam.io);
   - `aud`: names one of JANUA_AUDIENCES (default `eido-api,janua.dev`);
@@ -41,7 +44,7 @@ import httpx
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jwt.exceptions import InvalidKeyError, InvalidTokenError, PyJWTError
+from jwt.exceptions import InvalidKeyError, InvalidSignatureError, InvalidTokenError, PyJWTError
 from pydantic import BaseModel
 
 from eido_api.config import get_settings
@@ -136,16 +139,52 @@ def _claim_forced_refresh() -> bool:
     return True
 
 
-def _signing_key(jwks: dict, token: str) -> jwt.PyJWK:
+def _header_kid(token: str) -> Any:
+    """The token's `kid`, or None when it has none (absent or empty)."""
+    kid = jwt.get_unverified_header(token).get("kid")
+    return None if kid is None or kid == "" else kid
+
+
+def _is_signing_key(jwk: Any) -> bool:
+    """A published key that may verify an RS256 signature: RSA, not published
+    for another use (`use` absent or `sig`) or another algorithm (`alg` absent
+    or RS256)."""
+    return (
+        isinstance(jwk, dict)
+        and jwk.get("kty") == "RSA"
+        and jwk.get("use") in (None, "sig")
+        and jwk.get("alg") in (None, *_JANUA_ALGORITHMS)
+    )
+
+
+def _published_signing_keys(jwks: dict) -> list[jwt.PyJWK]:
+    """Every RS256 signing key in the JWKS, for a token that names no `kid`.
+
+    Janua's first-party session tokens carry no `kid` (observed 2026-11-14).
+
+    Raises:
+        InvalidKeyError: when the JWKS publishes no usable RS256 signing key.
+    """
+    keys: list[jwt.PyJWK] = []
+    for jwk in jwks.get("keys", []):
+        if not _is_signing_key(jwk):
+            continue
+        try:
+            keys.append(jwt.PyJWK(jwk, algorithm=_JANUA_ALGORITHMS[0]))
+        except PyJWTError:
+            continue
+    if not keys:
+        raise InvalidKeyError("No RS256 signing key published for a token without 'kid'")
+    return keys
+
+
+def _signing_key(jwks: dict, token: str, kid: Any) -> jwt.PyJWK:
     """Select the JWKS key named by the token's `kid` and bind it to RS256.
 
     Raises:
-        PyJWTError: on a malformed header, a missing `kid`, an unknown `kid`
-            (`_UnknownKeyIdError`), or a JWK that cannot verify RS256.
+        PyJWTError: on an unknown `kid` (`_UnknownKeyIdError`) or a JWK that
+            cannot verify RS256.
     """
-    kid = jwt.get_unverified_header(token).get("kid")
-    if kid is None:
-        raise InvalidTokenError("Token header missing 'kid'")
     jwk: dict[str, Any] | None = next(
         (k for k in jwks.get("keys", []) if isinstance(k, dict) and k.get("kid") == kid),
         None,
@@ -159,16 +198,7 @@ def _signing_key(jwks: dict, token: str) -> jwt.PyJWK:
     return jwt.PyJWK(jwk, algorithm=_JANUA_ALGORITHMS[0])
 
 
-async def _verify_token(token: str) -> dict[str, Any]:
-    """Verify a Janua RS256 JWT and return its claims. Raises PyJWTError."""
-    jwks = await _fetch_jwks()
-    try:
-        key = _signing_key(jwks, token)
-    except _UnknownKeyIdError:
-        if not _claim_forced_refresh():
-            raise
-        logger.info("Token kid not in cached JWKS; refetching once (key rotation)")
-        key = _signing_key(await _fetch_jwks(force=True), token)
+def _decode(token: str, key: jwt.PyJWK) -> dict[str, Any]:
     payload: dict[str, Any] = jwt.decode(
         token,
         key,
@@ -177,6 +207,45 @@ async def _verify_token(token: str) -> dict[str, Any]:
         leeway=_JANUA_LEEWAY_SECONDS,
         options={"require": _JANUA_REQUIRED_CLAIMS, "verify_aud": False},
     )
+    return payload
+
+
+def _decode_with_any(token: str, keys: list[jwt.PyJWK]) -> dict[str, Any]:
+    """Decode with the first key whose signature verifies.
+
+    Only a signature mismatch moves on to the next key. Any other failure
+    (algorithm not allowed, malformed token, or a claim check after the
+    signature verified) is final.
+    """
+    for key in keys:
+        try:
+            return _decode(token, key)
+        except InvalidSignatureError:
+            continue
+    raise InvalidSignatureError("No published signing key verifies this token")
+
+
+async def _verify_token(token: str) -> dict[str, Any]:
+    """Verify a Janua RS256 JWT and return its claims. Raises PyJWTError.
+
+    A token naming a `kid` is checked against that key only, with one
+    rate-limited refetch when the `kid` is unknown (key rotation). A token
+    without a `kid` is checked against every published RS256 signing key and
+    never forces a refetch, so kid-less junk cannot drive requests to Janua.
+    """
+    jwks = await _fetch_jwks()
+    kid = _header_kid(token)
+    if kid is None:
+        payload = _decode_with_any(token, _published_signing_keys(jwks))
+    else:
+        try:
+            key = _signing_key(jwks, token, kid)
+        except _UnknownKeyIdError:
+            if not _claim_forced_refresh():
+                raise
+            logger.info("Token kid not in cached JWKS; refetching once (key rotation)")
+            key = _signing_key(await _fetch_jwks(force=True), token, kid)
+        payload = _decode(token, key)
     _check_audience(payload)
     return payload
 
@@ -262,7 +331,8 @@ async def get_current_user(
     )
 
     try:
-        # Key selected by `kid`, RS256 only, `exp` required, 30 s leeway,
+        # Key selected by `kid` (or every RS256 signing key when there is no
+        # `kid`), RS256 only, `exp` required, 30 s leeway,
         # `iss` and `aud` checked (see the module docstring).
         payload = await _verify_token(token)
     except PyJWTError as exc:
