@@ -16,25 +16,35 @@ Claims checked on every token (Janua's issuer/JWKS contract:
     absent or RS256) and accepted if one verifies;
   - `exp`: present and not passed (30 s leeway);
   - `iss`: equals JANUA_ISSUER (default https://auth.madfam.io);
-  - `aud`: names one of JANUA_AUDIENCES (default `eido-api,janua.dev`);
+  - `aud`: names one of JANUA_AUDIENCES (default `janua.dev` only);
+  - `type`: equals "access" (refresh and ID tokens are refused);
   - `sub`: present.
 
 Janua signs every relying party's tokens with one key, so the signature only
 proves "Janua minted this". The audience says for whom:
-  - `eido-api` is this service's own audience. A token naming it is accepted
-    as issued, except a refresh token (`type`, when present, must be "access").
   - `janua.dev` is Janua's shared platform audience. Janua's own sign-in mints
     a person's session token on it, and so does any OAuth client registered
     without an audience of its own. A token accepted only because of it must
-    be a first-party session access token: `type == "access"`, no `client_id`,
-    no `scope`, not a machine (client_credentials) token, not a service
-    principal (`is_service_account`). Every token Janua issues to an OAuth
-    client carries `client_id`, so a token obtained by another application
-    cannot be replayed here.
+    be a first-party session access token: no `client_id`, no `scope`, not a
+    machine (client_credentials) token, not a service principal
+    (`is_service_account`). Every token Janua issues to an OAuth client
+    carries `client_id`, so on THIS path a token obtained by another
+    application cannot be replayed here.
+  - Any other audience an operator adds to JANUA_AUDIENCES (e.g. `eido-api`)
+    is accepted as issued, OAuth-client and machine tokens included. Janua
+    does not reserve audiences: any Janua user can register an OAuth client
+    claiming one and obtain tokens for it, so the replay protection above does
+    NOT hold on this path. Add an audience only after it has been reserved in
+    Janua for eido's own client. None is configured by default.
 
-Authorization uses application roles only: Janua's `roles` claim mixes
-`<app>:<role>` roles with bare organization roles (`admin`, `owner`,
-`member`), and a bare role grants nothing in eido. See `ADMIN_ROLE`.
+Authorization uses application roles only, and only from a first-party
+session token. Janua's `roles` claim on a session token carries real
+application-role grants (`<app>:<role>`) next to bare organization roles
+(`admin`, `owner`, `member`); a bare role grants nothing in eido. On a token
+issued to an OAuth client, `roles` also carries organization role names,
+which organization admins choose freely (one can be named `eido:admin`), so
+such a token never grants `eido:admin`. The verifier records which path
+accepted the token (`JanuaUser.first_party_session`); see `ADMIN_ROLE`.
 """
 import logging
 import time
@@ -100,11 +110,15 @@ def parse_audiences(raw: str) -> frozenset[str]:
 _JANUA_ISSUER = settings.janua_issuer
 _ALLOWED_AUDIENCES = parse_audiences(settings.janua_audiences)
 
-# JWKS cache. Janua rotates its key with a hard cut, so a token naming a `kid`
-# that is not in the cached set forces one refetch before it is rejected. Forced
-# refetches are rate-limited process-wide, so tokens with forged `kid` values
-# cannot turn into a stream of requests to Janua.
+# JWKS cache. Janua rotates its key with a hard cut, so a token whose key is
+# not in the cached set (an unknown `kid`, or a kid-less token no cached key
+# verifies) forces one refetch before it is rejected. Forced refetches share
+# one process-wide rate limit, so junk tokens cannot turn into a stream of
+# requests to Janua. The cache is also re-read after a TTL, so a retired key
+# stops being trusted without waiting for a failure.
 _jwks_cache: dict | None = None
+_jwks_fetched_at: float | None = None
+_JWKS_TTL_S = 3600.0
 _JWKS_FORCED_REFRESH_MIN_INTERVAL_S = 60.0
 _jwks_forced_refresh_time: float | None = None
 
@@ -113,17 +127,38 @@ class _UnknownKeyIdError(InvalidTokenError):
     """The token's `kid` is not in the JWKS (possibly a key rotation)."""
 
 
-async def _fetch_jwks(*, force: bool = False) -> dict:
-    global _jwks_cache
-    if _jwks_cache and not force:
-        return _jwks_cache
+async def _download_jwks() -> dict:
     jwks_url = f"{settings.janua_url}/.well-known/jwks.json"
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.get(jwks_url)
         resp.raise_for_status()
-        _jwks_cache = resp.json()
-        logger.debug("JWKS fetched from Janua: %d keys", len(_jwks_cache.get("keys", [])))
+        jwks: dict = resp.json()
+        return jwks
+
+
+async def _fetch_jwks(*, force: bool = False) -> dict:
+    """The cached JWKS, re-read when forced, missing, or older than the TTL.
+
+    A TTL refresh that fails keeps serving the cached set (logged), so a
+    Janua blip does not log everyone out; a forced or first fetch that fails
+    raises.
+    """
+    global _jwks_cache, _jwks_fetched_at
+    now = time.monotonic()
+    expired = _jwks_fetched_at is None or (now - _jwks_fetched_at) >= _JWKS_TTL_S
+    if _jwks_cache and not force and not expired:
         return _jwks_cache
+    try:
+        jwks = await _download_jwks()
+    except (httpx.HTTPError, ValueError):
+        if _jwks_cache and not force:
+            logger.warning("JWKS TTL refresh failed; keeping the cached key set", exc_info=True)
+            return _jwks_cache
+        raise
+    _jwks_cache = jwks
+    _jwks_fetched_at = now
+    logger.debug("JWKS fetched from Janua: %d keys", len(jwks.get("keys", [])))
+    return jwks
 
 
 def _claim_forced_refresh() -> bool:
@@ -225,18 +260,29 @@ def _decode_with_any(token: str, keys: list[jwt.PyJWK]) -> dict[str, Any]:
     raise InvalidSignatureError("No published signing key verifies this token")
 
 
-async def _verify_token(token: str) -> dict[str, Any]:
-    """Verify a Janua RS256 JWT and return its claims. Raises PyJWTError.
+async def _verify_token(token: str) -> tuple[dict[str, Any], bool]:
+    """Verify a Janua RS256 JWT. Raises PyJWTError.
+
+    Returns the claims and whether the token was accepted as a first-party
+    session token (see `_check_audience`).
 
     A token naming a `kid` is checked against that key only, with one
     rate-limited refetch when the `kid` is unknown (key rotation). A token
-    without a `kid` is checked against every published RS256 signing key and
-    never forces a refetch, so kid-less junk cannot drive requests to Janua.
+    without a `kid` is checked against every published RS256 signing key;
+    when none verifies, the JWKS is refetched once under the same rate limit
+    (Janua rotated its key) and the token is tried once more.
     """
     jwks = await _fetch_jwks()
     kid = _header_kid(token)
     if kid is None:
-        payload = _decode_with_any(token, _published_signing_keys(jwks))
+        try:
+            payload = _decode_with_any(token, _published_signing_keys(jwks))
+        except InvalidSignatureError:
+            if not _claim_forced_refresh():
+                raise
+            logger.info("No cached key verifies a kid-less token; refetching once (key rotation)")
+            refreshed = await _fetch_jwks(force=True)
+            payload = _decode_with_any(token, _published_signing_keys(refreshed))
     else:
         try:
             key = _signing_key(jwks, token, kid)
@@ -246,8 +292,8 @@ async def _verify_token(token: str) -> dict[str, Any]:
             logger.info("Token kid not in cached JWKS; refetching once (key rotation)")
             key = _signing_key(await _fetch_jwks(force=True), token, kid)
         payload = _decode(token, key)
-    _check_audience(payload)
-    return payload
+    first_party_session = _check_audience(payload)
+    return payload, first_party_session
 
 
 def _token_audiences(payload: dict[str, Any]) -> list[str]:
@@ -269,8 +315,13 @@ def _is_machine_token(payload: dict[str, Any]) -> bool:
     )
 
 
-def _check_audience(payload: dict[str, Any]) -> None:
-    """Enforce the audience allowlist and the shared-audience session rules.
+def _check_audience(payload: dict[str, Any]) -> bool:
+    """Enforce `type`, the audience allowlist and the shared-audience rules.
+
+    Returns True when the token was accepted as a first-party session token
+    (shared audience, no `client_id`): the only kind whose `roles` may grant
+    `eido:admin`. A token accepted on an operator-configured audience returns
+    False whatever it carries.
 
     Raises:
         InvalidTokenError: with the reason, which is logged, never returned.
@@ -281,16 +332,17 @@ def _check_audience(payload: dict[str, Any]) -> None:
     if not own and not shared:
         raise InvalidTokenError(f"Token audience {sorted(audiences)!r} is not accepted")
 
+    # Both paths: an access token only. Refresh tokens carry `type: refresh`;
+    # Janua's ID tokens carry no `type` at all.
     token_type = payload.get("type")
+    if token_type != _TOKEN_TYPE_ACCESS:
+        raise InvalidTokenError(f"Token type {token_type!r} is not 'access'")
+
     if own:
-        # Issued for eido: accepted as issued, but never a refresh token.
-        if token_type is not None and token_type != _TOKEN_TYPE_ACCESS:
-            raise InvalidTokenError(f"Token type {token_type!r} is not an access token")
-        return
+        # Operator-configured audience: accepted as issued, never admin.
+        return False
 
     # Accepted only because of the shared audience: first-party session only.
-    if token_type != _TOKEN_TYPE_ACCESS:
-        raise InvalidTokenError(f"Shared-audience token type {token_type!r} is not 'access'")
     if _is_machine_token(payload):
         raise InvalidTokenError("Machine token on the shared audience; it must name eido's audience")
     if payload.get("is_service_account"):
@@ -299,6 +351,7 @@ def _check_audience(payload: dict[str, Any]) -> None:
         raise InvalidTokenError(
             "Token issued to an OAuth client on the shared audience; it must name eido's audience"
         )
+    return True
 
 
 class JanuaUser(BaseModel):
@@ -308,11 +361,33 @@ class JanuaUser(BaseModel):
     username: str | None = None
     roles: list[str] = []
     tier: str = "free"   # Populated from Dhanam entitlement claim if present
+    # Set by the verifier, never from a claim: True only when the token was
+    # accepted as a first-party Janua session token (shared audience, no
+    # `client_id`). Only such a token's `roles` are application-role grants.
+    first_party_session: bool = False
 
     @property
     def is_admin(self) -> bool:
-        """True only for the `eido:admin` application role; a bare `admin` grants nothing."""
-        return ADMIN_ROLE in self.roles
+        """`eido:admin` on a first-party session token, and nothing else.
+
+        A bare `admin` grants nothing; `eido:admin` on a token issued to an
+        OAuth client grants nothing either (organization admins name those
+        roles freely).
+        """
+        return self.first_party_session and ADMIN_ROLE in self.roles
+
+
+def _str_claim(payload: dict[str, Any], name: str) -> str | None:
+    value = payload.get(name)
+    return value if isinstance(value, str) else None
+
+
+def _roles_claim(payload: dict[str, Any]) -> list[str]:
+    """`roles` as a list of strings; anything else (null, a string, mixed) is empty."""
+    roles = payload.get("roles")
+    if isinstance(roles, list) and all(isinstance(r, str) for r in roles):
+        return list(roles)
+    return []
 
 
 async def get_current_user(
@@ -334,22 +409,24 @@ async def get_current_user(
         # Key selected by `kid` (or every RS256 signing key when there is no
         # `kid`), RS256 only, `exp` required, 30 s leeway,
         # `iss` and `aud` checked (see the module docstring).
-        payload = await _verify_token(token)
+        payload, first_party_session = await _verify_token(token)
     except PyJWTError as exc:
         logger.warning("JWT verification failed: %s", exc)
         raise credentials_exception from exc
 
     sub = payload.get("sub")
-    if not sub:
+    if not sub or not isinstance(sub, str):
+        logger.warning("JWT verification failed: missing or non-string 'sub'")
         raise credentials_exception
 
     return JanuaUser(
         id=sub,
-        org_id=payload.get("org_id"),
-        email=payload.get("email"),
-        username=payload.get("preferred_username"),
-        roles=payload.get("roles", []),
-        tier=payload.get("eido_tier", payload.get("tier", "free")),
+        org_id=_str_claim(payload, "org_id"),
+        email=_str_claim(payload, "email"),
+        username=_str_claim(payload, "preferred_username"),
+        roles=_roles_claim(payload),
+        tier=_str_claim(payload, "eido_tier") or _str_claim(payload, "tier") or "free",
+        first_party_session=first_party_session,
     )
 
 
@@ -359,9 +436,20 @@ async def get_optional_user(
         HTTPBearer(auto_error=False)
     ),
 ) -> JanuaUser | None:
+    """The caller when a valid token is present, else None (anonymous).
+
+    Any failure to verify degrades to anonymous, a JWKS fetch error included,
+    so a public page never turns into a 500. A present but invalid token is
+    never treated as authenticated: it gets exactly what an anonymous caller
+    gets.
+    """
     if not credentials:
         return None
     try:
         return await get_current_user(credentials)
     except HTTPException:
+        return None
+    except Exception:
+        logger.warning("Optional auth could not verify the token; treating as anonymous",
+                       exc_info=True)
         return None

@@ -52,7 +52,10 @@ def _claims(**overrides: Any) -> dict[str, Any]:
         "org_id": "org-1",
         "roles": ["member"],
         "iss": "https://auth.madfam.io",
-        "aud": "eido-api",
+        # A first-party Janua session token: the shared audience, an access
+        # token, no client_id, no scope.
+        "aud": "janua.dev",
+        "type": "access",
         "iat": now,
         "exp": now + 900,
     }
@@ -101,10 +104,18 @@ def _hs256_with_public_key_token(kid: str | None = "key-a") -> str:
 @pytest.fixture(autouse=True)
 def _reset_jwks_state():
     auth._jwks_cache = None
+    auth._jwks_fetched_at = None
     auth._jwks_forced_refresh_time = None
     yield
     auth._jwks_cache = None
+    auth._jwks_fetched_at = None
     auth._jwks_forced_refresh_time = None
+
+
+@pytest.fixture
+def eido_api_audience(monkeypatch):
+    """An operator has reserved `eido-api` in Janua and added it to JANUA_AUDIENCES."""
+    monkeypatch.setattr(auth, "_ALLOWED_AUDIENCES", frozenset({"janua.dev", "eido-api"}))
 
 
 def _current_user(token: str, fetch: AsyncMock | None = None) -> auth.JanuaUser:
@@ -139,18 +150,35 @@ def test_expired_within_leeway_is_accepted():
 
 
 def test_defaults_are_the_production_issuer_and_audiences():
+    """`eido-api` is not reserved in Janua, so it is not accepted by default."""
     assert auth._JANUA_ISSUER == "https://auth.madfam.io"
-    assert auth._ALLOWED_AUDIENCES == frozenset({"eido-api", "janua.dev"})
+    assert auth._ALLOWED_AUDIENCES == frozenset({"janua.dev"})
 
 
-def test_eido_audience_is_accepted_as_issued():
-    """A token for eido's own audience may come from an OAuth client or a machine."""
-    token = _token(client_id="eido-web", scope="openid profile", type="access")
-    assert _current_user(token).id == "user-1"
+def test_session_token_on_shared_audience_is_accepted():
+    """Janua's own sign-in: `janua.dev`, `type: access`, no client_id, no scope."""
+    user = _current_user(_token())
+    assert user.id == "user-1"
+    assert user.first_party_session is True
 
 
-def test_eido_audience_machine_token_is_accepted():
+def test_eido_audience_rejected_by_default():
+    _assert_rejected(_token(aud="eido-api", client_id="eido-web"))
+
+
+# -- an operator-configured audience (own-audience path) -------------------------
+
+
+def test_eido_audience_is_accepted_as_issued_when_configured(eido_api_audience):
+    """A token for a configured audience may come from an OAuth client or a machine."""
+    user = _current_user(_token(aud="eido-api", client_id="eido-web", scope="openid profile"))
+    assert user.id == "user-1"
+    assert user.first_party_session is False
+
+
+def test_eido_audience_machine_token_is_accepted_when_configured(eido_api_audience):
     token = _token(
+        aud="eido-api",
         sub="service-account:eido-worker",
         token_use="client_credentials",
         actor_type="service_account",
@@ -160,17 +188,31 @@ def test_eido_audience_machine_token_is_accepted():
     assert _current_user(token).id == "service-account:eido-worker"
 
 
-def test_eido_audience_in_a_list_is_accepted():
+def test_eido_audience_in_a_list_is_accepted_when_configured(eido_api_audience):
     assert _current_user(_token(aud=["other-api", "eido-api"])).id == "user-1"
 
 
-def test_eido_audience_refresh_token_rejected():
-    _assert_rejected(_token(type="refresh"))
+def test_eido_audience_refresh_token_rejected(eido_api_audience):
+    _assert_rejected(_token(aud="eido-api", type="refresh"))
 
 
-def test_session_token_on_shared_audience_is_accepted():
-    """Janua's own sign-in: `janua.dev`, `type: access`, no client_id, no scope."""
-    assert _current_user(_token(aud="janua.dev", type="access")).id == "user-1"
+def test_eido_audience_id_token_without_type_rejected(eido_api_audience):
+    """Janua's ID tokens carry no `type`; both paths require `type: access`."""
+    _assert_rejected(_token(aud="eido-api", type=None, client_id="eido-web"))
+
+
+def test_both_audiences_with_client_id_rejected_by_default():
+    """`aud` lists both, `client_id` present: with only `janua.dev` accepted it is a client token."""
+    _assert_rejected(_token(aud=["janua.dev", "eido-api"], client_id="other-app"))
+
+
+def test_both_audiences_with_client_id_is_never_admin(eido_api_audience):
+    """Configured: accepted on the own-audience path, which never grants eido:admin."""
+    user = _current_user(
+        _token(aud=["janua.dev", "eido-api"], client_id="other-app", roles=["eido:admin"])
+    )
+    assert user.first_party_session is False
+    assert user.is_admin is False
 
 
 # -- issuer and audience --------------------------------------------------------
@@ -198,38 +240,34 @@ def test_missing_audience_rejected():
 
 def test_shared_audience_with_client_id_rejected():
     """Issued to another OAuth client that has no audience of its own."""
-    _assert_rejected(_token(aud="janua.dev", type="access", client_id="other-app"))
+    _assert_rejected(_token(client_id="other-app"))
 
 
 def test_shared_audience_with_scope_rejected():
-    _assert_rejected(_token(aud="janua.dev", type="access", scope="openid profile"))
+    _assert_rejected(_token(scope="openid profile"))
 
 
 def test_shared_audience_refresh_token_rejected():
-    _assert_rejected(_token(aud="janua.dev", type="refresh"))
+    _assert_rejected(_token(type="refresh"))
 
 
 def test_shared_audience_without_type_rejected():
-    _assert_rejected(_token(aud="janua.dev"))
+    """An ID-token shape (no `type`) is refused."""
+    _assert_rejected(_token(type=None))
 
 
 def test_shared_audience_machine_token_rejected():
     _assert_rejected(
-        _token(
-            aud="janua.dev",
-            type="access",
-            sub="service-account:other-app",
-            token_use="client_credentials",
-        )
+        _token(sub="service-account:other-app", token_use="client_credentials")
     )
 
 
 def test_shared_audience_service_account_subject_alone_rejected():
-    _assert_rejected(_token(aud="janua.dev", type="access", sub="service-account:other-app"))
+    _assert_rejected(_token(sub="service-account:other-app"))
 
 
 def test_shared_audience_service_principal_rejected():
-    _assert_rejected(_token(aud="janua.dev", type="access", is_service_account=True))
+    _assert_rejected(_token(is_service_account=True))
 
 
 @pytest.mark.parametrize("raw", ["", " , ", "eido-api,*"])
@@ -249,12 +287,47 @@ def test_bare_admin_role_is_not_eido_admin():
     assert _current_user(_token(roles=["admin", "owner"])).is_admin is False
 
 
-def test_application_admin_role_is_eido_admin():
+def test_application_admin_role_on_a_session_token_is_eido_admin():
     assert _current_user(_token(roles=["member", "eido:admin"])).is_admin is True
 
 
 def test_other_products_admin_role_is_not_eido_admin():
     assert _current_user(_token(roles=["pravara-mes:admin"])).is_admin is False
+
+
+def test_oauth_client_token_with_eido_admin_role_is_not_admin(eido_api_audience):
+    """OAuth-path `roles` carry organization role names, which org admins choose freely."""
+    user = _current_user(_token(aud="eido-api", client_id="some-app", roles=["eido:admin"]))
+    assert user.is_admin is False
+
+
+def test_first_party_session_cannot_be_set_by_a_claim(eido_api_audience):
+    token = _token(aud="eido-api", roles=["eido:admin"], first_party_session=True)
+    assert _current_user(token).is_admin is False
+
+
+@pytest.mark.parametrize("roles", [None, "eido:admin", ["eido:admin", 7], {"eido:admin": True}])
+def test_malformed_roles_are_treated_as_empty(roles: Any):
+    claims_roles = {"roles": roles} if roles is not None else {}
+    token = jwt.encode(
+        {**_claims(roles=None), **claims_roles}, _KEY_A, algorithm="RS256", headers={"kid": "key-a"}
+    )
+    user = _current_user(token)
+    assert user.roles == []
+    assert user.is_admin is False
+
+
+def test_roles_explicit_null_is_treated_as_empty():
+    token = jwt.encode(
+        {**_claims(), "roles": None}, _KEY_A, algorithm="RS256", headers={"kid": "key-a"}
+    )
+    assert _current_user(token).roles == []
+
+
+def test_non_string_profile_claims_do_not_fail():
+    token = _token(email=["x"], org_id=5, preferred_username={"a": 1}, eido_tier=3)
+    user = _current_user(token)
+    assert (user.email, user.org_id, user.username, user.tier) == (None, None, None, "free")
 
 
 # -- key selection ---------------------------------------------------------------
@@ -272,8 +345,8 @@ def test_kidless_session_token_signed_by_published_key_is_accepted():
     assert _current_user(token).id == "user-1"
 
 
-def test_kidless_eido_audience_token_signed_by_published_key_is_accepted():
-    assert _current_user(_token(kid=None)).id == "user-1"
+def test_kidless_eido_audience_token_signed_by_published_key_is_accepted(eido_api_audience):
+    assert _current_user(_token(kid=None, aud="eido-api", client_id="eido-web")).id == "user-1"
 
 
 def test_empty_kid_is_treated_as_no_kid():
@@ -307,14 +380,83 @@ def test_kidless_token_skips_unusable_keys_and_verifies_with_a_signing_key():
     assert _current_user(_token(kid=None), fetch).id == "user-1"
 
 
-def test_kidless_token_never_forces_a_refetch():
+def test_kidless_junk_forces_at_most_one_refetch_per_minute():
     fetch = AsyncMock(return_value=_JWKS)
     for _ in range(3):
         _assert_rejected(_token(private_key=_KEY_UNPUBLISHED, kid=None), fetch)
+    forced = [c for c in fetch.await_args_list if c.kwargs == {"force": True}]
+    assert len(forced) == 1
+
+
+def test_kidless_valid_token_does_not_refetch():
+    fetch = AsyncMock(return_value=_JWKS)
     _current_user(_token(kid=None), fetch)
-    assert fetch.await_count == 4
-    assert all(c.kwargs == {} for c in fetch.await_args_list)
+    assert fetch.await_count == 1
     assert auth._jwks_forced_refresh_time is None
+
+
+def test_kidless_token_after_key_rotation_refetches_once_then_verifies():
+    """Old key cached; the token is signed by the new key: one refetch, then accepted."""
+    rotated = {"keys": [_jwk(_KEY_B, "key-b")]}
+    fetch = AsyncMock(side_effect=[_JWKS, rotated])
+    assert _current_user(_token(private_key=_KEY_B, kid=None), fetch).id == "user-1"
+    assert [c.kwargs for c in fetch.await_args_list] == [{}, {"force": True}]
+
+
+def test_kidless_junk_within_a_minute_of_a_rotation_refetch_does_not_refetch():
+    rotated = {"keys": [_jwk(_KEY_B, "key-b")]}
+    fetch = AsyncMock(side_effect=[_JWKS, rotated, rotated])
+    _current_user(_token(private_key=_KEY_B, kid=None), fetch)
+    _assert_rejected(_token(private_key=_KEY_UNPUBLISHED, kid=None), fetch)
+    forced = [c for c in fetch.await_args_list if c.kwargs == {"force": True}]
+    assert len(forced) == 1
+
+
+def test_kidless_and_named_kid_share_one_refetch_rate_limit():
+    fetch = AsyncMock(return_value=_JWKS)
+    _assert_rejected(_token(private_key=_KEY_UNPUBLISHED, kid=None), fetch)
+    _assert_rejected(_token(kid="key-forged"), fetch)
+    forced = [c for c in fetch.await_args_list if c.kwargs == {"force": True}]
+    assert len(forced) == 1
+
+
+# -- JWKS cache TTL ----------------------------------------------------------------
+
+
+def test_jwks_cache_is_reused_within_the_ttl():
+    download = AsyncMock(return_value=_JWKS)
+    with patch.object(auth, "_download_jwks", download):
+        asyncio.run(auth._fetch_jwks())
+        asyncio.run(auth._fetch_jwks())
+    assert download.await_count == 1
+
+
+def test_jwks_cache_is_reread_after_the_ttl():
+    rotated = {"keys": [_jwk(_KEY_B, "key-b")]}
+    download = AsyncMock(side_effect=[_JWKS, rotated])
+    with patch.object(auth, "_download_jwks", download):
+        asyncio.run(auth._fetch_jwks())
+        auth._jwks_fetched_at -= auth._JWKS_TTL_S + 1
+        assert asyncio.run(auth._fetch_jwks()) is rotated
+    assert download.await_count == 2
+
+
+def test_failed_ttl_refresh_keeps_the_cached_keys():
+    import httpx
+
+    download = AsyncMock(side_effect=[_JWKS, httpx.ConnectError("down")])
+    with patch.object(auth, "_download_jwks", download):
+        asyncio.run(auth._fetch_jwks())
+        auth._jwks_fetched_at -= auth._JWKS_TTL_S + 1
+        assert asyncio.run(auth._fetch_jwks()) is _JWKS
+
+
+def test_first_fetch_failure_raises():
+    import httpx
+
+    with patch.object(auth, "_download_jwks", AsyncMock(side_effect=httpx.ConnectError("down"))):
+        with pytest.raises(httpx.ConnectError):
+            asyncio.run(auth._fetch_jwks())
 
 
 def test_kidless_alg_none_rejected():
@@ -423,6 +565,14 @@ def test_invalid_token_does_not_drop_the_jwks_cache():
 
 
 # -- optional auth ---------------------------------------------------------------
+
+
+def test_optional_user_is_none_when_the_jwks_cannot_be_fetched():
+    import httpx
+
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=_token())
+    with patch.object(auth, "_fetch_jwks", AsyncMock(side_effect=httpx.ConnectError("down"))):
+        assert asyncio.run(auth.get_optional_user(creds)) is None
 
 
 def test_optional_user_is_none_for_invalid_token():

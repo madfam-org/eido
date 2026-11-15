@@ -25,11 +25,13 @@ class Settings(BaseSettings):
 
     # Token claims the API requires (auth.py). `iss` must equal JANUA_ISSUER
     # exactly; `aud` must name one of JANUA_AUDIENCES (comma-separated). The
-    # defaults are the production values: Janua's public origin, eido's own
-    # audience, and Janua's shared first-party session audience `janua.dev`
-    # (accepted only for a person's session access token; see auth.py).
+    # defaults are the production values: Janua's public origin and Janua's
+    # shared first-party session audience `janua.dev` (accepted only for a
+    # person's session access token; see auth.py). Janua does not reserve
+    # audiences, so add another one (e.g. `eido-api`) only after it has been
+    # reserved in Janua for eido's own client.
     janua_issuer: str = "https://auth.madfam.io"
-    janua_audiences: str = "eido-api,janua.dev"
+    janua_audiences: str = "janua.dev"
 
     # Janua M2M service identity (OAuth2 client-credentials). Lets Eido
     # authenticate its outbound handoffs to Janua-protected siblings — Factlas
