@@ -240,6 +240,26 @@ def schedule_handoffs(capture_id: str) -> None:
     task.add_done_callback(_dispatch_finished)
 
 
+async def drain_handoffs(timeout: float = 20.0) -> None:
+    """Wait for dispatches in flight, at shutdown, before the pool closes.
+
+    A deploy stops the process; without this, a publish made in the seconds
+    before it would lose its handoffs, or deliver only some of them, with no
+    row to retry from. Bounded so shutdown fits the pod's grace period.
+    """
+    pending = set(_pending_dispatches)
+    if not pending:
+        return
+    logger.info("Waiting for %d handoff dispatch(es) before shutdown", len(pending))
+    _, unfinished = await asyncio.wait(pending, timeout=timeout)
+    if unfinished:
+        logger.error(
+            "%d handoff dispatch(es) did not finish before shutdown; "
+            "retry them from the capture's handoffs",
+            len(unfinished),
+        )
+
+
 async def dispatch_all_handoffs(capture_id: str) -> None:
     """
     Master dispatch — fires all applicable ecosystem handoffs for a published capture.

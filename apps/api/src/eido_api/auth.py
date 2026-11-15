@@ -124,10 +124,33 @@ _jwks_fetched_at: float | None = None
 _JWKS_TTL_S = 3600.0
 _JWKS_FORCED_REFRESH_MIN_INTERVAL_S = 60.0
 _jwks_forced_refresh_time: float | None = None
-# After a failed download, the next attempt waits this long (see _fetch_jwks).
+# After a failed refresh of a cached key set, the next attempt waits this long
+# (the cached keys keep working meanwhile; see _fetch_jwks).
 _JWKS_RETRY_AFTER_FAILURE_S = 60.0
+# With nothing cached nobody can sign in, so a failed first download is
+# remembered only briefly: long enough that requests do not each wait out a
+# timeout, short enough that one blip at pod start does not block sign-in.
+_JWKS_COLD_RETRY_AFTER_S = 5.0
+# Upper bound on one download, connection to last byte.
+_JWKS_DOWNLOAD_DEADLINE_S = 15.0
 _jwks_failed_at: float | None = None
-_jwks_lock = asyncio.Lock()
+_jwks_lock: asyncio.Lock | None = None
+_jwks_lock_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _download_lock() -> asyncio.Lock:
+    """The single-flight lock of the running event loop.
+
+    An asyncio.Lock belongs to the loop it first waited on, so it is made per
+    loop rather than at import (one loop per process in production; the tests
+    run many).
+    """
+    global _jwks_lock, _jwks_lock_loop
+    loop = asyncio.get_running_loop()
+    if _jwks_lock is None or _jwks_lock_loop is not loop:
+        _jwks_lock = asyncio.Lock()
+        _jwks_lock_loop = loop
+    return _jwks_lock
 
 
 class JWKSUnavailableError(Exception):
@@ -152,6 +175,18 @@ async def _download_jwks() -> dict:
         return jwks
 
 
+def _usable_jwks(jwks: Any) -> dict:
+    """The downloaded document when it is a key set with at least one key.
+
+    Anything else (an empty object, a list, an empty `keys`) is a failed
+    download, not a key set to cache: caching it would reject every token
+    until the next refresh.
+    """
+    if not isinstance(jwks, dict) or not isinstance(jwks.get("keys"), list) or not jwks["keys"]:
+        raise ValueError("Janua's JWKS response holds no keys")
+    return jwks
+
+
 def _cached_jwks_if_fresh() -> dict | None:
     if not _jwks_cache or _jwks_fetched_at is None:
         return None
@@ -163,26 +198,32 @@ def _cached_jwks_if_fresh() -> dict | None:
 async def _fetch_jwks(*, force: bool = False) -> dict:
     """The cached JWKS, re-read when forced, missing, or older than the TTL.
 
-    One download at a time: requests that arrive while one is in flight wait
-    for it and use its result, so a TTL expiry is one request to Janua, not
-    one per request in flight.
+    One download at a time, bounded by `_JWKS_DOWNLOAD_DEADLINE_S`:
+      - an expired cache is refreshed by ONE request; the others keep using
+        the cached keys meanwhile instead of waiting for it;
+      - with nothing cached, requests wait for the one download in flight.
 
     A failed download never turns into a download per request:
       - a TTL refresh that fails keeps serving the cached set (logged), so a
         Janua blip does not log everyone out, and is tried again only after
         `_JWKS_RETRY_AFTER_FAILURE_S`;
-      - with nothing cached, the failure is remembered for the same interval
-        and callers get `JWKSUnavailableError` at once instead of each
-        waiting out a timeout.
+      - with nothing cached, the failure is remembered for
+        `_JWKS_COLD_RETRY_AFTER_S` and callers get `JWKSUnavailableError`
+        at once instead of each waiting out a timeout.
+    A response that is not a key set with at least one key is a failure.
     A forced fetch (key rotation, already rate limited by its callers) that
-    fails raises `JWKSUnavailableError`.
+    fails raises `JWKSUnavailableError` and leaves the cache as it was.
     """
     global _jwks_cache, _jwks_fetched_at, _jwks_failed_at
+    lock = _download_lock()
     if not force:
         cached = _cached_jwks_if_fresh()
         if cached is not None:
             return cached
-    async with _jwks_lock:
+        if _jwks_cache and lock.locked():
+            # Expired, and another request is already refreshing it.
+            return _jwks_cache
+    async with lock:
         if not force:
             # Another request may have refreshed, or failed, while this one waited.
             cached = _cached_jwks_if_fresh()
@@ -191,12 +232,14 @@ async def _fetch_jwks(*, force: bool = False) -> dict:
             if (
                 not _jwks_cache
                 and _jwks_failed_at is not None
-                and (time.monotonic() - _jwks_failed_at) < _JWKS_RETRY_AFTER_FAILURE_S
+                and (time.monotonic() - _jwks_failed_at) < _JWKS_COLD_RETRY_AFTER_S
             ):
                 raise JWKSUnavailableError("Janua's JWKS could not be fetched; retrying shortly")
         try:
-            jwks = await _download_jwks()
-        except (httpx.HTTPError, ValueError) as exc:
+            jwks = _usable_jwks(
+                await asyncio.wait_for(_download_jwks(), timeout=_JWKS_DOWNLOAD_DEADLINE_S)
+            )
+        except (httpx.HTTPError, ValueError, TimeoutError) as exc:
             now = time.monotonic()
             if _jwks_cache and not force:
                 # Keep the cached keys and look again after the retry
@@ -210,7 +253,7 @@ async def _fetch_jwks(*, force: bool = False) -> dict:
         _jwks_cache = jwks
         _jwks_fetched_at = time.monotonic()
         _jwks_failed_at = None
-        logger.debug("JWKS fetched from Janua: %d keys", len(jwks.get("keys", [])))
+        logger.debug("JWKS fetched from Janua: %d keys", len(jwks["keys"]))
         return jwks
 
 
@@ -472,7 +515,7 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Sign-in verification is temporarily unavailable. Try again shortly.",
-            headers={"Retry-After": str(int(_JWKS_RETRY_AFTER_FAILURE_S))},
+            headers={"Retry-After": str(int(_JWKS_COLD_RETRY_AFTER_S))},
         ) from exc
 
     sub = payload.get("sub")

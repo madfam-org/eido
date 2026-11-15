@@ -239,6 +239,10 @@ async def publish_capture(
     if capture.status != CaptureStatus.READY:
         raise HTTPException(status_code=409, detail=f"Capture is not ready (status: {capture.status}).")
 
+    if capture.is_public:
+        # Already published: nothing changes and nothing is sent again.
+        return {"status": "published", "capture_id": capture_id}
+
     capture.is_public = True
     await db.flush()
 

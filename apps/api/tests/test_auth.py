@@ -107,11 +107,13 @@ def _reset_jwks_state():
     auth._jwks_fetched_at = None
     auth._jwks_forced_refresh_time = None
     auth._jwks_failed_at = None
+    auth._jwks_lock = None
     yield
     auth._jwks_cache = None
     auth._jwks_fetched_at = None
     auth._jwks_forced_refresh_time = None
     auth._jwks_failed_at = None
+    auth._jwks_lock = None
 
 
 @pytest.fixture
@@ -488,12 +490,25 @@ def test_cold_cache_failure_is_remembered_instead_of_refetched_per_request():
             with pytest.raises(auth.JWKSUnavailableError):
                 asyncio.run(auth._fetch_jwks())
         assert download.await_count == 1
-        auth._jwks_failed_at -= auth._JWKS_RETRY_AFTER_FAILURE_S + 1
+        auth._jwks_failed_at -= auth._JWKS_COLD_RETRY_AFTER_S + 1
         assert asyncio.run(auth._fetch_jwks()) is _JWKS
         assert download.await_count == 2
 
 
-def test_concurrent_requests_at_ttl_expiry_share_one_download():
+def test_a_failed_first_download_blocks_sign_in_only_briefly():
+    """One blip at pod start must not answer 503 for a minute."""
+    assert auth._JWKS_COLD_RETRY_AFTER_S <= 5
+
+
+def _burst(download, n: int = 20):
+    async def run():
+        return await asyncio.gather(*(auth._fetch_jwks() for _ in range(n)))
+
+    with patch.object(auth, "_download_jwks", download):
+        return asyncio.run(run())
+
+
+def test_concurrent_requests_on_a_cold_cache_share_one_download():
     calls = 0
 
     async def slow_download():
@@ -502,13 +517,80 @@ def test_concurrent_requests_at_ttl_expiry_share_one_download():
         await asyncio.sleep(0.01)
         return _JWKS
 
-    async def burst():
-        return await asyncio.gather(*(auth._fetch_jwks() for _ in range(20)))
-
-    with patch.object(auth, "_download_jwks", slow_download):
-        results = asyncio.run(burst())
+    results = _burst(slow_download)
     assert calls == 1
     assert all(r is _JWKS for r in results)
+
+
+def test_requests_at_ttl_expiry_use_the_cached_keys_while_one_refreshes():
+    """An expired cache is refreshed by one request; the others do not wait."""
+    rotated = {"keys": [dict(_JWKS["keys"][0], kid="key-new")]}
+    calls = 0
+
+    async def slow_download():
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return rotated
+
+    with patch.object(auth, "_download_jwks", AsyncMock(return_value=_JWKS)):
+        asyncio.run(auth._fetch_jwks())
+    auth._jwks_fetched_at -= auth._JWKS_TTL_S + 1
+    results = _burst(slow_download)
+    assert calls == 1
+    assert sum(r is rotated for r in results) == 1
+    assert sum(r is _JWKS for r in results) == 19
+    assert auth._jwks_cache is rotated
+
+
+@pytest.mark.parametrize("body", [{}, [], {"keys": []}, {"keys": "x"}, None])
+def test_a_response_without_keys_is_a_failed_download(body):
+    with patch.object(auth, "_download_jwks", AsyncMock(return_value=body)):
+        with pytest.raises(auth.JWKSUnavailableError):
+            asyncio.run(auth._fetch_jwks())
+    assert auth._jwks_cache is None
+
+
+def test_a_response_without_keys_does_not_replace_the_cached_keys():
+    download = AsyncMock(side_effect=[_JWKS, {"keys": []}])
+    with patch.object(auth, "_download_jwks", download):
+        asyncio.run(auth._fetch_jwks())
+        auth._jwks_fetched_at -= auth._JWKS_TTL_S + 1
+        assert asyncio.run(auth._fetch_jwks()) is _JWKS
+    assert auth._jwks_cache is _JWKS
+
+
+def test_a_download_that_never_finishes_is_cut_off():
+    async def hang():
+        await asyncio.sleep(30)
+
+    with (
+        patch.object(auth, "_download_jwks", hang),
+        patch.object(auth, "_JWKS_DOWNLOAD_DEADLINE_S", 0.05),
+    ):
+        with pytest.raises(auth.JWKSUnavailableError):
+            asyncio.run(auth._fetch_jwks())
+
+
+def test_a_failed_forced_refetch_is_503_once_and_leaves_valid_tokens_working():
+    """Janua is down and someone sends a kid-less junk token: that request
+    gets 503, the cached keys stay, and a valid token still verifies."""
+    import httpx
+
+    download = AsyncMock(side_effect=[_JWKS, httpx.ConnectError("down")])
+    junk = HTTPAuthorizationCredentials(scheme="Bearer", credentials=_token(_KEY_B, kid=None))
+    good = HTTPAuthorizationCredentials(scheme="Bearer", credentials=_token())
+    with patch.object(auth, "_download_jwks", download):
+        assert asyncio.run(auth.get_current_user(good)).id
+        with pytest.raises(HTTPException) as first:
+            asyncio.run(auth.get_current_user(junk))
+        with pytest.raises(HTTPException) as second:
+            asyncio.run(auth.get_current_user(junk))
+        assert asyncio.run(auth.get_current_user(good)).id
+    assert first.value.status_code == 503
+    assert second.value.status_code == 401  # rate limited: no second refetch
+    assert download.await_count == 2
+    assert auth._jwks_cache is _JWKS
 
 
 def test_required_auth_answers_503_when_the_jwks_cannot_be_fetched():
@@ -520,6 +602,7 @@ def test_required_auth_answers_503_when_the_jwks_cannot_be_fetched():
         with pytest.raises(HTTPException) as exc:
             asyncio.run(auth.get_current_user(creds))
     assert exc.value.status_code == 503
+    assert exc.value.headers["Retry-After"] == str(int(auth._JWKS_COLD_RETRY_AFTER_S))
 
 
 def test_bare_tier_claim_never_sets_the_eido_tier():
@@ -640,8 +723,13 @@ def test_optional_user_is_none_when_the_jwks_cannot_be_fetched():
     import httpx
 
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=_token())
-    with patch.object(auth, "_fetch_jwks", AsyncMock(side_effect=httpx.ConnectError("down"))):
-        assert asyncio.run(auth.get_optional_user(creds)) is None
+    download = AsyncMock(side_effect=httpx.ConnectError("down"))
+    with patch.object(auth, "_download_jwks", download):
+        # The real path: the download fails, required auth would answer 503,
+        # optional auth is anonymous; the failure is remembered, not refetched.
+        for _ in range(3):
+            assert asyncio.run(auth.get_optional_user(creds)) is None
+    assert download.await_count == 1
 
 
 def test_optional_user_is_none_for_invalid_token():

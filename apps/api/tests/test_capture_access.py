@@ -351,9 +351,8 @@ def test_invalid_token_on_a_public_capture_is_200(client_for, headers):
 def test_jwks_outage_on_a_public_capture_is_200_not_500(client_for):
     capture = _capture(is_public=True)
     client = client_for(capture)
-    import httpx
 
-    with patch.object(auth, "_fetch_jwks", AsyncMock(side_effect=httpx.ConnectError("down"))):
+    with patch.object(auth, "_fetch_jwks", AsyncMock(side_effect=auth.JWKSUnavailableError("down"))):
         resp = client.get(f"/api/v1/captures/{capture.id}", headers=_bearer("sub-owner"))
     assert resp.status_code == 200
 
@@ -361,9 +360,8 @@ def test_jwks_outage_on_a_public_capture_is_200_not_500(client_for):
 def test_jwks_outage_on_a_private_capture_is_404(client_for):
     capture = _capture(is_public=False)
     client = client_for(capture)
-    import httpx
 
-    with patch.object(auth, "_fetch_jwks", AsyncMock(side_effect=httpx.ConnectError("down"))):
+    with patch.object(auth, "_fetch_jwks", AsyncMock(side_effect=auth.JWKSUnavailableError("down"))):
         resp = client.get(f"/api/v1/captures/{capture.id}", headers=_bearer("sub-owner"))
     assert resp.status_code == 404
 
@@ -592,6 +590,146 @@ def test_publish_dispatches_its_handoffs_after_the_request_commits():
     fa.assert_awaited_once()
     ceq.assert_awaited_once()
     assert bh.await_args.args[0].is_public is True
+
+
+def _publish_app(capture: Capture):
+    from fastapi import FastAPI
+
+    from eido_api.routers import captures as captures_router
+
+    mini = FastAPI()
+    mini.include_router(captures_router.router, prefix="/api/v1/captures")
+    session = _FakeSession([capture])
+
+    async def _db():
+        yield session
+
+    mini.dependency_overrides[get_db] = _db
+    return mini
+
+
+def test_publishing_a_published_capture_sends_nothing_again():
+    from eido_api.services import handoff
+
+    capture = _capture(is_public=True)
+    with (
+        patch.object(auth, "_fetch_jwks", AsyncMock(return_value=_JWKS)),
+        patch.object(handoff, "schedule_handoffs") as schedule,
+    ):
+        resp = TestClient(_publish_app(capture)).post(
+            f"/api/v1/captures/{capture.id}/publish", headers=_bearer("sub-owner")
+        )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "published"
+    schedule.assert_not_called()
+
+
+def test_first_publish_schedules_one_dispatch():
+    from eido_api.services import handoff
+
+    capture = _capture(is_public=False)
+    with (
+        patch.object(auth, "_fetch_jwks", AsyncMock(return_value=_JWKS)),
+        patch.object(handoff, "schedule_handoffs") as schedule,
+    ):
+        client = TestClient(_publish_app(capture))
+        url = f"/api/v1/captures/{capture.id}/publish"
+        assert client.post(url, headers=_bearer("sub-owner")).status_code == 200
+        assert client.post(url, headers=_bearer("sub-owner")).status_code == 200
+    schedule.assert_called_once_with(str(capture.id))
+
+
+@pytest.mark.parametrize("before,expected", [
+    (CaptureStatus.PROCESSING_3DGS, 1),  # the transition to READY dispatches
+    (CaptureStatus.READY, 0),            # a repeated READY callback does not
+])
+def test_worker_ready_callback_dispatches_only_on_the_transition(before, expected):
+    from fastapi import FastAPI
+
+    from eido_api.routers import jobs as jobs_router
+    from eido_api.services import handoff
+
+    capture = _capture(is_public=True)
+    capture.status = before
+    session = _FakeSession([capture])
+
+    async def _db():
+        yield session
+
+    mini = FastAPI()
+    mini.include_router(jobs_router.router, prefix="/api/v1/jobs")
+    mini.dependency_overrides[get_db] = _db
+    with (
+        patch.object(jobs_router.settings, "internal_api_token", "worker-token"),
+        patch("eido_api.services.auto_tag.auto_tag_capture", AsyncMock()),
+        patch.object(handoff, "schedule_handoffs") as schedule,
+    ):
+        resp = TestClient(mini).patch(
+            f"/api/v1/jobs/captures/{capture.id}/status",
+            json={"status": "ready"},
+            headers={"X-Internal-Token": "worker-token"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert schedule.call_count == expected
+
+
+def test_shutdown_waits_for_dispatches_in_flight():
+    import asyncio
+
+    from eido_api.services import handoff
+
+    finished: list[str] = []
+
+    async def slow_dispatch(capture_id: str) -> None:
+        await asyncio.sleep(0.05)
+        finished.append(capture_id)
+
+    async def run() -> None:
+        with patch.object(handoff, "dispatch_all_handoffs", slow_dispatch):
+            handoff.schedule_handoffs("a")
+            handoff.schedule_handoffs("b")
+            await handoff.drain_handoffs(timeout=2)
+
+    asyncio.run(run())
+    assert sorted(finished) == ["a", "b"]
+    assert not handoff._pending_dispatches
+
+
+def test_shutdown_does_not_wait_forever_for_a_stuck_dispatch():
+    import asyncio
+
+    from eido_api.services import handoff
+
+    async def stuck(capture_id: str) -> None:
+        await asyncio.sleep(30)
+
+    async def run() -> float:
+        with patch.object(handoff, "dispatch_all_handoffs", stuck):
+            handoff.schedule_handoffs("a")
+            started = time.monotonic()
+            await handoff.drain_handoffs(timeout=0.05)
+            waited = time.monotonic() - started
+            for task in list(handoff._pending_dispatches):
+                task.cancel()
+            await asyncio.sleep(0)
+            return waited
+
+    assert asyncio.run(run()) < 1
+    assert not handoff._pending_dispatches
+
+
+def test_a_person_with_an_overlong_token_name_is_provisioned(client_for):
+    capture = _capture(is_public=True)
+    client = client_for(capture)
+    resp = client.get(
+        f"/api/v1/captures/{capture.id}",
+        headers=_bearer("sub-long-name", preferred_username="n" * 300),
+    )
+    assert resp.status_code == 200
+    created = [u for u in client.fake.users if u.janua_id == "sub-long-name"]
+    assert len(created) == 1
+    assert created[0].username.startswith("user_")
+    assert len(created[0].display_name) <= 100
 
 
 def test_dispatch_refuses_a_public_capture_that_is_not_ready():

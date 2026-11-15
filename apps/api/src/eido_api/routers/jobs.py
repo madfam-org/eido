@@ -209,6 +209,7 @@ async def update_capture_status(
     if not capture:
         raise HTTPException(status_code=404, detail="Capture not found.")
 
+    was_ready = capture.status == CaptureStatus.READY
     try:
         capture.status = CaptureStatus(data.status)
     except ValueError:
@@ -227,7 +228,8 @@ async def update_capture_status(
     logger.info("Capture %s status → %s", capture_id, data.status)
 
     # On READY: fire auto-tagging (Selva) + ecosystem handoffs in background
-    if data.status == CaptureStatus.READY.value and capture.is_public:
+    # (only on the transition: a repeated READY callback sends nothing again)
+    if data.status == CaptureStatus.READY.value and capture.is_public and not was_ready:
         import asyncio
 
         from eido_api.services.auto_tag import auto_tag_capture

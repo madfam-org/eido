@@ -22,7 +22,7 @@ from eido_api.auth import JanuaUser, get_current_user, get_optional_user
 from eido_api.db.session import get_db
 from eido_api.models import User
 
-_USERNAME_MAX = 100  # users.username and users.display_name are String(100)
+_USERNAME_MAX = 100  # users.username is String(100); display_name is kept to the same length
 
 
 def _generated_username(janua_sub: str) -> str:
