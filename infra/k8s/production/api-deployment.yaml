@@ -48,7 +48,7 @@ spec:
             - name: BLUEPRINT_HARVESTER_URL
               value: "https://api.blueprint.tube"
             - name: YANTRA4D_URL
-              value: "https://api.yantra4d.io"
+              value: "https://api.yantra4d.com"
             - name: FACTLAS_URL
               value: "https://api.factl.as"
             - name: CEQ_URL
