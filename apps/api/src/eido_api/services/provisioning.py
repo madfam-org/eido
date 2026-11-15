@@ -22,6 +22,8 @@ from eido_api.auth import JanuaUser, get_current_user, get_optional_user
 from eido_api.db.session import get_db
 from eido_api.models import User
 
+_USERNAME_MAX = 100  # users.username and users.display_name are String(100)
+
 
 def _generated_username(janua_sub: str) -> str:
     """A username derived from a hash of the whole `sub`.
@@ -30,6 +32,15 @@ def _generated_username(janua_sub: str) -> str:
     starts with `service-account:`); a hash of the full value does not.
     """
     return f"user_{hashlib.sha256(janua_sub.encode()).hexdigest()[:16]}"
+
+
+def _fits(value: str | None) -> str | None:
+    """The token's name when the username column can hold it, else None.
+
+    A longer value would fail the insert with a data error, not a unique
+    violation, and turn a first request into a 500.
+    """
+    return value if value and len(value) <= _USERNAME_MAX else None
 
 
 async def _select_user(db: AsyncSession, janua_sub: str) -> User | None:
@@ -43,7 +54,7 @@ async def _insert_user(db: AsyncSession, janua: JanuaUser, username: str) -> Use
     user = User(
         janua_id=janua.id,
         username=username,
-        display_name=janua.username or username,
+        display_name=_fits(janua.username) or username,
         tier=janua.tier or "free",
     )
     try:
@@ -70,7 +81,7 @@ async def get_or_create_user(db: AsyncSession, janua: JanuaUser) -> User:
         return user
 
     generated = _generated_username(janua.id)
-    for username in dict.fromkeys([janua.username or generated, generated]):
+    for username in dict.fromkeys([_fits(janua.username) or generated, generated]):
         created = await _insert_user(db, janua, username)
         if created is not None:
             return created

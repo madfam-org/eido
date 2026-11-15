@@ -27,9 +27,9 @@ class Settings(BaseSettings):
     # exactly; `aud` must name one of JANUA_AUDIENCES (comma-separated). The
     # defaults are the production values: Janua's public origin and Janua's
     # shared first-party session audience `janua.dev` (accepted only for a
-    # person's session access token; see auth.py). Janua does not reserve
-    # audiences, so add another one (e.g. `eido-api`) only after it has been
-    # reserved in Janua for eido's own client.
+    # person's session access token; see auth.py). Janua reserves only the
+    # audiences in its registry and `eido-api` is not on it, so add another
+    # audience only after it is reserved there and no other client holds it.
     janua_issuer: str = "https://auth.madfam.io"
     janua_audiences: str = "janua.dev"
 

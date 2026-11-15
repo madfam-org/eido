@@ -489,12 +489,14 @@ def test_retry_on_a_public_capture_is_accepted(client_for):
     dispatch.assert_awaited_once()
 
 
-def test_dispatch_all_handoffs_refuses_a_private_capture():
+def _run_dispatch(rows: list[Capture | None]):
+    """Run dispatch_all_handoffs against a database that answers `rows` in
+    order (the last one repeats), without waiting between reads."""
     import asyncio
 
     from eido_api.services import handoff
 
-    capture = _capture(is_public=False)
+    reads: list[Capture | None] = []
 
     class _Session:
         async def __aenter__(self):
@@ -504,18 +506,54 @@ def test_dispatch_all_handoffs_refuses_a_private_capture():
             return False
 
         async def execute(self, stmt):
-            return _Result([capture])
+            row = rows[min(len(reads), len(rows) - 1)]
+            reads.append(row)
+            return _Result([row] if row is not None else [])
 
     with (
         patch.object(handoff, "async_session_maker", lambda: _Session()),
+        patch.object(handoff, "_PUBLISHED_READ_DELAY_S", 0),
         patch.object(handoff, "_dispatch_blueprint_harvester", AsyncMock()) as bh,
         patch.object(handoff, "_dispatch_factlas", AsyncMock()) as fa,
         patch.object(handoff, "_dispatch_ceq", AsyncMock()) as ceq,
     ):
-        asyncio.run(handoff.dispatch_all_handoffs(str(capture.id)))
-    bh.assert_not_awaited()
-    fa.assert_not_awaited()
-    ceq.assert_not_awaited()
+        asyncio.run(handoff.dispatch_all_handoffs("capture-id"))
+    return reads, (bh, fa, ceq)
+
+
+def test_dispatch_all_handoffs_refuses_a_private_capture():
+    from eido_api.services import handoff
+
+    reads, targets = _run_dispatch([_capture(is_public=False)])
+    assert len(reads) == handoff._PUBLISHED_READ_ATTEMPTS
+    for target in targets:
+        target.assert_not_awaited()
+
+
+def test_dispatch_waits_for_the_publish_to_commit():
+    """The publish route schedules dispatch before its transaction commits on
+    current FastAPI: the first reads still see the private row."""
+    private = _capture(is_public=False)
+    public = _capture(is_public=True)
+    reads, targets = _run_dispatch([private, private, public])
+    assert len(reads) == 3
+    for target in targets:
+        target.assert_awaited_once_with(public)
+
+
+def test_dispatch_refuses_a_public_capture_that_is_not_ready():
+    capture = _capture(is_public=True)
+    capture.status = CaptureStatus.PROCESSING_3DGS
+    _, targets = _run_dispatch([capture])
+    for target in targets:
+        target.assert_not_awaited()
+
+
+def test_dispatch_stops_at_once_when_the_capture_does_not_exist():
+    reads, targets = _run_dispatch([None])
+    assert len(reads) == 1
+    for target in targets:
+        target.assert_not_awaited()
 
 
 # -- export: tier gate --------------------------------------------------------------
@@ -637,3 +675,13 @@ def test_adding_a_public_capture_to_a_collection_is_204(client_for):
                        headers=_bearer("sub-other"))
     assert resp.status_code == 204
     assert len(client.fake.links) == 1
+
+
+def test_a_token_name_too_long_for_the_username_column_is_not_used():
+    from eido_api.services import provisioning
+
+    assert provisioning._fits("ada") == "ada"
+    assert provisioning._fits("x" * provisioning._USERNAME_MAX) is not None
+    assert provisioning._fits("x" * (provisioning._USERNAME_MAX + 1)) is None
+    assert provisioning._fits(None) is None
+    assert provisioning._fits("") is None

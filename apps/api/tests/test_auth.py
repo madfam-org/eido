@@ -106,10 +106,12 @@ def _reset_jwks_state():
     auth._jwks_cache = None
     auth._jwks_fetched_at = None
     auth._jwks_forced_refresh_time = None
+    auth._jwks_failed_at = None
     yield
     auth._jwks_cache = None
     auth._jwks_fetched_at = None
     auth._jwks_forced_refresh_time = None
+    auth._jwks_failed_at = None
 
 
 @pytest.fixture
@@ -455,8 +457,75 @@ def test_first_fetch_failure_raises():
     import httpx
 
     with patch.object(auth, "_download_jwks", AsyncMock(side_effect=httpx.ConnectError("down"))):
-        with pytest.raises(httpx.ConnectError):
+        with pytest.raises(auth.JWKSUnavailableError):
             asyncio.run(auth._fetch_jwks())
+
+
+def test_failed_ttl_refresh_is_not_retried_on_every_request():
+    """While Janua is down past the TTL, the cached keys are served and the
+    download is attempted once per retry interval, not once per request."""
+    import httpx
+
+    download = AsyncMock(side_effect=[_JWKS, httpx.ConnectError("down"), httpx.ConnectError("down")])
+    with patch.object(auth, "_download_jwks", download):
+        asyncio.run(auth._fetch_jwks())
+        auth._jwks_fetched_at -= auth._JWKS_TTL_S + 1
+        for _ in range(5):
+            assert asyncio.run(auth._fetch_jwks()) is _JWKS
+        assert download.await_count == 2
+        # After the retry interval it looks again (and keeps the cache on failure).
+        auth._jwks_fetched_at -= auth._JWKS_RETRY_AFTER_FAILURE_S + 1
+        assert asyncio.run(auth._fetch_jwks()) is _JWKS
+        assert download.await_count == 3
+
+
+def test_cold_cache_failure_is_remembered_instead_of_refetched_per_request():
+    import httpx
+
+    download = AsyncMock(side_effect=[httpx.ConnectError("down"), _JWKS])
+    with patch.object(auth, "_download_jwks", download):
+        for _ in range(4):
+            with pytest.raises(auth.JWKSUnavailableError):
+                asyncio.run(auth._fetch_jwks())
+        assert download.await_count == 1
+        auth._jwks_failed_at -= auth._JWKS_RETRY_AFTER_FAILURE_S + 1
+        assert asyncio.run(auth._fetch_jwks()) is _JWKS
+        assert download.await_count == 2
+
+
+def test_concurrent_requests_at_ttl_expiry_share_one_download():
+    calls = 0
+
+    async def slow_download():
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.01)
+        return _JWKS
+
+    async def burst():
+        return await asyncio.gather(*(auth._fetch_jwks() for _ in range(20)))
+
+    with patch.object(auth, "_download_jwks", slow_download):
+        results = asyncio.run(burst())
+    assert calls == 1
+    assert all(r is _JWKS for r in results)
+
+
+def test_required_auth_answers_503_when_the_jwks_cannot_be_fetched():
+    """A valid token is not called invalid because Janua is unreachable."""
+    import httpx
+
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=_token())
+    with patch.object(auth, "_download_jwks", AsyncMock(side_effect=httpx.ConnectError("down"))):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(auth.get_current_user(creds))
+    assert exc.value.status_code == 503
+
+
+def test_bare_tier_claim_never_sets_the_eido_tier():
+    """Janua's `tier` summarises every product; only `eido_tier` counts here."""
+    assert _current_user(_token(tier="pro")).tier == "free"
+    assert _current_user(_token(tier="pro", eido_tier="studio")).tier == "studio"
 
 
 def test_kidless_alg_none_rejected():

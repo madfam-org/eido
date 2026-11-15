@@ -31,11 +31,13 @@ proves "Janua minted this". The audience says for whom:
     carries `client_id`, so on THIS path a token obtained by another
     application cannot be replayed here.
   - Any other audience an operator adds to JANUA_AUDIENCES (e.g. `eido-api`)
-    is accepted as issued, OAuth-client and machine tokens included. Janua
-    does not reserve audiences: any Janua user can register an OAuth client
-    claiming one and obtain tokens for it, so the replay protection above does
-    NOT hold on this path. Add an audience only after it has been reserved in
-    Janua for eido's own client. None is configured by default.
+    is accepted as issued, OAuth-client and machine tokens included, so the
+    replay protection above does NOT hold on this path. Janua reserves only
+    the audiences listed in its registry (`reserved_oauth_boundaries.py`);
+    `eido-api` is not on it, so today any Janua user can register an OAuth
+    client claiming it and obtain tokens for it. Add an audience only after
+    it is on that registry AND no existing client row already carries it.
+    None is configured by default.
 
 Authorization uses application roles only, and only from a first-party
 session token. Janua's `roles` claim on a session token carries real
@@ -46,6 +48,7 @@ which organization admins choose freely (one can be named `eido:admin`), so
 such a token never grants `eido:admin`. The verifier records which path
 accepted the token (`JanuaUser.first_party_session`); see `ADMIN_ROLE`.
 """
+import asyncio
 import logging
 import time
 from typing import Annotated, Any
@@ -121,6 +124,19 @@ _jwks_fetched_at: float | None = None
 _JWKS_TTL_S = 3600.0
 _JWKS_FORCED_REFRESH_MIN_INTERVAL_S = 60.0
 _jwks_forced_refresh_time: float | None = None
+# After a failed download, the next attempt waits this long (see _fetch_jwks).
+_JWKS_RETRY_AFTER_FAILURE_S = 60.0
+_jwks_failed_at: float | None = None
+_jwks_lock = asyncio.Lock()
+
+
+class JWKSUnavailableError(Exception):
+    """Janua's key set could not be fetched, so no token can be verified now.
+
+    Deliberately not a PyJWTError: the token may be perfectly valid, so the
+    caller is told the service is unavailable (503), not that the token is
+    bad (401).
+    """
 
 
 class _UnknownKeyIdError(InvalidTokenError):
@@ -136,29 +152,66 @@ async def _download_jwks() -> dict:
         return jwks
 
 
+def _cached_jwks_if_fresh() -> dict | None:
+    if not _jwks_cache or _jwks_fetched_at is None:
+        return None
+    if (time.monotonic() - _jwks_fetched_at) >= _JWKS_TTL_S:
+        return None
+    return _jwks_cache
+
+
 async def _fetch_jwks(*, force: bool = False) -> dict:
     """The cached JWKS, re-read when forced, missing, or older than the TTL.
 
-    A TTL refresh that fails keeps serving the cached set (logged), so a
-    Janua blip does not log everyone out; a forced or first fetch that fails
-    raises.
+    One download at a time: requests that arrive while one is in flight wait
+    for it and use its result, so a TTL expiry is one request to Janua, not
+    one per request in flight.
+
+    A failed download never turns into a download per request:
+      - a TTL refresh that fails keeps serving the cached set (logged), so a
+        Janua blip does not log everyone out, and is tried again only after
+        `_JWKS_RETRY_AFTER_FAILURE_S`;
+      - with nothing cached, the failure is remembered for the same interval
+        and callers get `JWKSUnavailableError` at once instead of each
+        waiting out a timeout.
+    A forced fetch (key rotation, already rate limited by its callers) that
+    fails raises `JWKSUnavailableError`.
     """
-    global _jwks_cache, _jwks_fetched_at
-    now = time.monotonic()
-    expired = _jwks_fetched_at is None or (now - _jwks_fetched_at) >= _JWKS_TTL_S
-    if _jwks_cache and not force and not expired:
-        return _jwks_cache
-    try:
-        jwks = await _download_jwks()
-    except (httpx.HTTPError, ValueError):
-        if _jwks_cache and not force:
-            logger.warning("JWKS TTL refresh failed; keeping the cached key set", exc_info=True)
-            return _jwks_cache
-        raise
-    _jwks_cache = jwks
-    _jwks_fetched_at = now
-    logger.debug("JWKS fetched from Janua: %d keys", len(jwks.get("keys", [])))
-    return jwks
+    global _jwks_cache, _jwks_fetched_at, _jwks_failed_at
+    if not force:
+        cached = _cached_jwks_if_fresh()
+        if cached is not None:
+            return cached
+    async with _jwks_lock:
+        if not force:
+            # Another request may have refreshed, or failed, while this one waited.
+            cached = _cached_jwks_if_fresh()
+            if cached is not None:
+                return cached
+            if (
+                not _jwks_cache
+                and _jwks_failed_at is not None
+                and (time.monotonic() - _jwks_failed_at) < _JWKS_RETRY_AFTER_FAILURE_S
+            ):
+                raise JWKSUnavailableError("Janua's JWKS could not be fetched; retrying shortly")
+        try:
+            jwks = await _download_jwks()
+        except (httpx.HTTPError, ValueError) as exc:
+            now = time.monotonic()
+            if _jwks_cache and not force:
+                # Keep the cached keys and look again after the retry
+                # interval, not on the next request.
+                _jwks_fetched_at = now - _JWKS_TTL_S + _JWKS_RETRY_AFTER_FAILURE_S
+                logger.warning("JWKS TTL refresh failed; keeping the cached key set", exc_info=True)
+                return _jwks_cache
+            if not _jwks_cache:
+                _jwks_failed_at = now
+            raise JWKSUnavailableError("Janua's JWKS could not be fetched") from exc
+        _jwks_cache = jwks
+        _jwks_fetched_at = time.monotonic()
+        _jwks_failed_at = None
+        logger.debug("JWKS fetched from Janua: %d keys", len(jwks.get("keys", [])))
+        return jwks
 
 
 def _claim_forced_refresh() -> bool:
@@ -413,6 +466,14 @@ async def get_current_user(
     except PyJWTError as exc:
         logger.warning("JWT verification failed: %s", exc)
         raise credentials_exception from exc
+    except JWKSUnavailableError as exc:
+        # Not the caller's fault and not a verdict on the token.
+        logger.error("JWT verification unavailable: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Sign-in verification is temporarily unavailable. Try again shortly.",
+            headers={"Retry-After": str(int(_JWKS_RETRY_AFTER_FAILURE_S))},
+        ) from exc
 
     sub = payload.get("sub")
     if not sub or not isinstance(sub, str):
@@ -425,7 +486,10 @@ async def get_current_user(
         email=_str_claim(payload, "email"),
         username=_str_claim(payload, "preferred_username"),
         roles=_roles_claim(payload),
-        tier=_str_claim(payload, "eido_tier") or _str_claim(payload, "tier") or "free",
+        # Only eido's own tier claim. Janua's bare `tier` is a summary across
+        # every product (paid for anything reads as "pro"), so it never
+        # unlocks an eido feature.
+        tier=_str_claim(payload, "eido_tier") or "free",
         first_party_session=first_party_session,
     )
 

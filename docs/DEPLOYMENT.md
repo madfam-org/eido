@@ -151,7 +151,8 @@ Provisioning brings up *shells*. Remaining product engineering:
    and `aud` in `JANUA_AUDIENCES` (default `janua.dev` only); the defaults
    are the production values, so the manifests set neither. A pasted Janua
    session token (`janua.dev`, no `client_id`) is accepted. Do not add
-   `eido-api` (or any audience) until Janua reserves it for eido's own client:
-   Janua does not reserve audiences, so anyone could otherwise register a
+   `eido-api` (or any audience) until it is on Janua's reserved-audience
+   registry (`reserved_oauth_boundaries.py`) and no other client row carries
+   it: `eido-api` is not reserved today, so anyone could otherwise register a
    client that mints tokens eido accepts. Administration is the `eido:admin`
    application role on a first-party session token only.
