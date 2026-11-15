@@ -228,7 +228,6 @@ async def trigger_processing(
 @router.post("/{capture_id}/publish", status_code=status.HTTP_200_OK)
 async def publish_capture(
     capture_id: str,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     viewer: Viewer = Depends(get_viewer),
 ) -> dict[str, Any]:
@@ -243,9 +242,10 @@ async def publish_capture(
     capture.is_public = True
     await db.flush()
 
-    # Fire ecosystem handoffs in background
-    from eido_api.services.handoff import dispatch_all_handoffs
-    background_tasks.add_task(dispatch_all_handoffs, str(capture_id))
+    # Fire ecosystem handoffs once this request has committed (not through
+    # BackgroundTasks, which finish before the commit; see schedule_handoffs).
+    from eido_api.services.handoff import schedule_handoffs
+    schedule_handoffs(str(capture_id))
 
     logger.info("Capture published", extra={"capture_id": capture_id})
     return {"status": "published", "capture_id": capture_id}

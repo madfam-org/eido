@@ -189,13 +189,12 @@ async def _load_published_capture(capture_id: str) -> Capture | None:
     a published (public), processed capture is ever dispatched, and the check
     is made on what the database has committed, not on the caller's word.
 
-    Both callers schedule this from inside a request whose transaction may
-    not have committed yet (the publish route sets `is_public`, the worker's
-    status route sets READY and the artifact URLs; whether a background task
-    runs before or after the request's commit depends on the FastAPI
-    version). So the row is re-read in a fresh session a few times before
-    giving up: a publish that committed is seen within the wait, and a publish
-    that rolled back is never dispatched.
+    Both callers schedule this (`schedule_handoffs`) from inside a request
+    whose transaction has not committed yet: the publish route sets
+    `is_public`, the worker's status route sets READY and the artifact URLs.
+    So the row is re-read in a fresh session a few times before giving up: a
+    publish that committed is seen within the wait, and a publish that rolled
+    back is never dispatched.
     """
     for attempt in range(_PUBLISHED_READ_ATTEMPTS):
         if attempt:
@@ -216,10 +215,35 @@ async def _load_published_capture(capture_id: str) -> Capture | None:
     return None
 
 
+_pending_dispatches: set[asyncio.Task[None]] = set()
+
+
+def _dispatch_finished(task: asyncio.Task[None]) -> None:
+    _pending_dispatches.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("dispatch_all_handoffs failed", exc_info=task.exception())
+
+
+def schedule_handoffs(capture_id: str) -> None:
+    """Start dispatch as its own task, to run once the calling request commits.
+
+    Call this from a request handler instead of FastAPI's BackgroundTasks:
+    on current FastAPI (observed on 0.163) a BackgroundTasks task runs to
+    completion BEFORE the request's database dependency commits, so it could
+    wait as long as it liked and never see the publish. A separate task lets
+    the request return and commit while dispatch waits for that commit
+    (`_load_published_capture`). The task is held here until it finishes;
+    the event loop keeps only a weak reference to a bare task.
+    """
+    task = asyncio.create_task(dispatch_all_handoffs(capture_id))
+    _pending_dispatches.add(task)
+    task.add_done_callback(_dispatch_finished)
+
+
 async def dispatch_all_handoffs(capture_id: str) -> None:
     """
     Master dispatch — fires all applicable ecosystem handoffs for a published capture.
-    Runs as a FastAPI background task after publish is confirmed.
+    Scheduled with `schedule_handoffs`; acts only on what the database has committed.
     """
     capture = await _load_published_capture(capture_id)
     if capture is None:

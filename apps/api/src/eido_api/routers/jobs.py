@@ -231,9 +231,9 @@ async def update_capture_status(
         import asyncio
 
         from eido_api.services.auto_tag import auto_tag_capture
-        from eido_api.services.handoff import dispatch_all_handoffs
+        from eido_api.services.handoff import schedule_handoffs
         asyncio.create_task(auto_tag_capture(str(capture_id)))
-        asyncio.create_task(dispatch_all_handoffs(str(capture_id)))
+        schedule_handoffs(str(capture_id))
 
     return {"ok": True}
 

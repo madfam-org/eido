@@ -541,6 +541,59 @@ def test_dispatch_waits_for_the_publish_to_commit():
         target.assert_awaited_once_with(public)
 
 
+def test_publish_dispatches_its_handoffs_after_the_request_commits():
+    """The publish route end to end, with the real ordering of the framework:
+    the request's transaction commits when its database dependency exits, and
+    a fresh session sees `is_public` only after that."""
+    from fastapi import FastAPI
+
+    from eido_api.routers import captures as captures_router
+    from eido_api.services import handoff
+
+    capture = _capture(is_public=False)
+    session = _FakeSession([capture])
+    committed = {"done": False}
+
+    async def _db():
+        yield session
+        committed["done"] = True  # the real get_db commits here
+
+    class _FreshSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def execute(self, stmt):
+            row = _capture(is_public=committed["done"])
+            row.id = capture.id
+            return _Result([row])
+
+    mini = FastAPI()
+    mini.include_router(captures_router.router, prefix="/api/v1/captures")
+    mini.dependency_overrides[get_db] = _db
+    with (
+        patch.object(auth, "_fetch_jwks", AsyncMock(return_value=_JWKS)),
+        patch.object(handoff, "async_session_maker", lambda: _FreshSession()),
+        patch.object(handoff, "_PUBLISHED_READ_DELAY_S", 0.02),
+        patch.object(handoff, "_dispatch_blueprint_harvester", AsyncMock()) as bh,
+        patch.object(handoff, "_dispatch_factlas", AsyncMock()) as fa,
+        patch.object(handoff, "_dispatch_ceq", AsyncMock()) as ceq,
+        TestClient(mini) as client,
+    ):
+        resp = client.post(f"/api/v1/captures/{capture.id}/publish", headers=_bearer("sub-owner"))
+        assert resp.status_code == 200
+        deadline = time.monotonic() + 3
+        while not ceq.await_count and time.monotonic() < deadline:
+            time.sleep(0.02)
+    assert committed["done"]
+    bh.assert_awaited_once()
+    fa.assert_awaited_once()
+    ceq.assert_awaited_once()
+    assert bh.await_args.args[0].is_public is True
+
+
 def test_dispatch_refuses_a_public_capture_that_is_not_ready():
     capture = _capture(is_public=True)
     capture.status = CaptureStatus.PROCESSING_3DGS
