@@ -93,9 +93,12 @@ Two distinctions the code depends on:
   the HDR, not by allowing the third-party origin in the CSP. Details are in
   `README.md` → Known issues.
 - API dependency notes: `sqlalchemy` is pinned `<2.1`. Token verification uses
-  PyJWT (`apps/api/src/eido_api/auth.py`): the JWKS key is picked by `kid`,
-  `["RS256"]` only, `exp` required, 30 s leeway, and an unknown `kid` refetches
-  the JWKS once (at most once per 60 s). `iss` must equal `JANUA_ISSUER`
+  PyJWT (`apps/api/src/eido_api/auth.py`): the JWKS key is picked by `kid`
+  when the token names one, `["RS256"]` only, `exp` required, 30 s leeway, and
+  an unknown `kid` refetches the JWKS once (at most once per 60 s). A token
+  with no `kid` (Janua's first-party session tokens carry none) is verified
+  against every published RS256 signing key (RSA, `use` absent or `sig`, `alg`
+  absent or RS256) and never forces a refetch. `iss` must equal `JANUA_ISSUER`
   (default `https://auth.madfam.io`) and `aud` must be in `JANUA_AUDIENCES`
   (default `eido-api,janua.dev`). A token for `eido-api` is accepted as issued
   (never a refresh token). A token accepted only because of Janua's shared

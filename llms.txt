@@ -19,9 +19,10 @@ concluding anything.
 - Web: Next.js 15.5.27 + React 19, React Three Fiber 9, drei 10. Image
   optimizer off with an exact `remotePatterns` allow-list; guarded by
   `apps/web/tests/next-config.test.mjs`.
-- API: FastAPI in `apps/api`. Janua tokens verified with PyJWT: key by `kid`,
-  RS256 only, `exp` required, 30 s leeway, one rate-limited JWKS re-fetch on an
-  unknown `kid` (#27). `iss` = `JANUA_ISSUER` (default `https://auth.madfam.io`),
+- API: FastAPI in `apps/api`. Janua tokens verified with PyJWT: key by `kid`
+  when present, RS256 only, `exp` required, 30 s leeway, one rate-limited JWKS
+  re-fetch on an unknown `kid` (#27); a token with no `kid` is verified against
+  the published RS256 signing keys, never forcing a re-fetch. `iss` = `JANUA_ISSUER` (default `https://auth.madfam.io`),
   `aud` in `JANUA_AUDIENCES` (default `eido-api,janua.dev`); a `janua.dev`-only
   token must be a first-party session access token (no `client_id`/`scope`).
 - Roles: `eido:admin` only; a bare `admin` grants nothing. Captures: public is

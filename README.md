@@ -89,8 +89,11 @@ smoke for it.
 - `postcss@8.4.31`, pinned exactly by `next@15.5.27`, still shows up in
   `pnpm audit`. It is build-time only and not part of the standalone server.
 - The API verifies Janua tokens with PyJWT (`apps/api/src/eido_api/auth.py`):
-  RS256 only, the JWKS key named by `kid`, `exp` required, 30 s leeway, and one
-  rate-limited JWKS refetch on an unknown `kid`. `iss` must equal
+  RS256 only, the JWKS key named by `kid` when the token names one, `exp`
+  required, 30 s leeway, and one rate-limited JWKS refetch on an unknown `kid`.
+  A token with no `kid` (Janua's first-party session tokens carry none) is
+  verified against the published RS256 signing keys and never forces a
+  refetch. `iss` must equal
   `JANUA_ISSUER` (default `https://auth.madfam.io`) and `aud` must be in
   `JANUA_AUDIENCES` (default `eido-api,janua.dev`). `janua.dev` is Janua's
   shared audience, so a token accepted only because of it must be a person's
@@ -104,8 +107,11 @@ smoke for it.
   only by its owner or an `eido:admin`. Everyone else gets 404, so a private
   capture's existence is not disclosed. This covers the capture detail, job
   status, export download, annotation list and create routes, and the captures
-  listed inside a collection. The web capture page does not send a token yet,
-  so in the browser a private capture shows as not found even to its owner.
+  listed inside a collection. The web capture page sends the Janua token pasted
+  on the upload page (kept in that tab's `sessionStorage`), so the owner sees
+  their private capture after uploading in the same tab. Without a stored
+  token, a private capture shows as "private, or does not exist", with a link
+  to the upload page. There is no web sign-in yet.
 - Python dependency note: `sqlalchemy` is pinned `<2.1`, because 2.1 drops
   greenlet from the default install and `sqlalchemy.ext.asyncio` then fails to
   import.
