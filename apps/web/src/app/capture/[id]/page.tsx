@@ -118,7 +118,6 @@ export default function CapturePage() {
 
   const ECOSYSTEM_TARGETS = [
     { id: "blueprint-harvester", label: "📦 Blueprint Harvester", desc: "Archive to global 3D data lake" },
-    { id: "yantra4d", label: "⚙️ Yantra4D", desc: "Open in parametric CAD engine" },
     { id: "factlas", label: "🌍 Factlas", desc: "Pin to geospatial atlas" },
     { id: "ceq", label: "🧠 CEQ", desc: "Generate marketing renders" },
   ];
