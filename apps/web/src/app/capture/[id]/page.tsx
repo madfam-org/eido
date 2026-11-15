@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Canvas } from "@react-three/fiber";
@@ -9,8 +9,23 @@ import { motion, AnimatePresence } from "framer-motion";
 import useSWR from "swr";
 
 import SpzPoints, { useSpz } from "@/components/SpzPoints";
+import { authHeaders, getStoredToken } from "@/lib/januaToken";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
+
+class FetchError extends Error {
+  constructor(public status: number) {
+    super(`HTTP ${status}`);
+  }
+}
+
+// Sends the token pasted on the upload page, when there is one: a private
+// capture answers 404 to anyone but its owner (and eido:admin).
+const authFetcher = ([url, token]: [string, string | null]) =>
+  fetch(url, { headers: authHeaders(token) }).then((r) => {
+    if (!r.ok) throw new FetchError(r.status);
+    return r.json();
+  });
 
 function Loader() {
   const { progress } = useProgress();
@@ -88,13 +103,19 @@ const FORMATS = ["glb", "spz", "obj", "usdz", "ply"];
 
 export default function CapturePage() {
   const params = useParams<{ id: string }>();
-  const { data: capture, isLoading } = useSWR(
-    params.id ? `/api/v1/captures/${params.id}` : null,
-    fetcher
+  // undefined until sessionStorage has been read (client only), so the first
+  // request already carries the token when there is one.
+  const [token, setToken] = useState<string | null | undefined>(undefined);
+  useEffect(() => setToken(getStoredToken()), []);
+  const tokenRead = token !== undefined;
+
+  const { data: capture, error, isLoading } = useSWR(
+    params.id && tokenRead ? [`/api/v1/captures/${params.id}`, token] : null,
+    authFetcher
   );
   const { data: annotations } = useSWR(
-    params.id ? `/api/v1/social/captures/${params.id}/annotations` : null,
-    fetcher
+    params.id && tokenRead ? [`/api/v1/social/captures/${params.id}/annotations`, token] : null,
+    authFetcher
   );
   const { data: embedData } = useSWR(
     capture?.is_public ? `/api/v1/export/${params.id}/embed` : null,
@@ -105,8 +126,14 @@ export default function CapturePage() {
   const [embedCopied, setEmbedCopied] = useState(false);
   const [likeLoading, setLikeLoading] = useState(false);
 
-  if (isLoading) return <CapturePageSkeleton />;
-  if (!capture) return <div className="p-8 text-slate-400">Capture not found.</div>;
+  if (!tokenRead || isLoading) return <CapturePageSkeleton />;
+  if (!capture) {
+    const status = error instanceof FetchError ? error.status : undefined;
+    if (status !== undefined && status !== 404) {
+      return <div className="p-8 text-slate-400">Could not load this capture (HTTP {status}).</div>;
+    }
+    return <CaptureNotFound hasToken={Boolean(token)} />;
+  }
 
   const copyEmbed = () => {
     if (embedData?.iframe_snippet) {
@@ -314,7 +341,7 @@ export default function CapturePage() {
                     onClick={() =>
                       fetch(`/api/v1/handoffs/${params.id}/retry`, {
                         method: "POST",
-                        headers: { "Content-Type": "application/json" },
+                        headers: { "Content-Type": "application/json", ...authHeaders(token ?? null) },
                         body: JSON.stringify({ target: t.id }),
                       })
                     }
@@ -330,6 +357,34 @@ export default function CapturePage() {
           </div>
         </aside>
       </div>
+    </div>
+  );
+}
+
+function CaptureNotFound({ hasToken }: { hasToken: boolean }) {
+  return (
+    <div className="p-8 max-w-md space-y-3 text-sm text-slate-400">
+      <p className="text-slate-200">Capture not found.</p>
+      {hasToken ? (
+        <p>
+          It does not exist, or it is private and the token stored in this tab is not its
+          owner&apos;s. Tokens expire: if this capture is yours, paste a fresh Janua token on
+          the{" "}
+          <Link href="/capture/new" className="text-sky-400 hover:text-sky-300">
+            upload page
+          </Link>{" "}
+          and reload this page.
+        </p>
+      ) : (
+        <p>
+          It is private, or it does not exist. Private captures are visible only to their
+          owner. If this capture is yours, paste your Janua token on the{" "}
+          <Link href="/capture/new" className="text-sky-400 hover:text-sky-300">
+            upload page
+          </Link>{" "}
+          in this tab, then reload this page.
+        </p>
+      )}
     </div>
   );
 }

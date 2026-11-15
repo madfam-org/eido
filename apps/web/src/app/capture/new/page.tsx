@@ -14,9 +14,9 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
-type Phase = "idle" | "registering" | "uploading" | "queueing" | "done" | "error";
+import { getStoredToken, storeToken } from "@/lib/januaToken";
 
-const TOKEN_KEY = "eido.janua_token";
+type Phase = "idle" | "registering" | "uploading" | "queueing" | "done" | "error";
 
 export default function NewCapturePage() {
   const router = useRouter();
@@ -39,7 +39,7 @@ export default function NewCapturePage() {
   const [altitude, setAltitude] = useState("");
 
   useEffect(() => {
-    const saved = sessionStorage.getItem(TOKEN_KEY);
+    const saved = getStoredToken();
     if (saved) setToken(saved);
   }, []);
 
@@ -88,7 +88,7 @@ export default function NewCapturePage() {
       return;
     }
 
-    sessionStorage.setItem(TOKEN_KEY, token);
+    storeToken(token);
     const auth = { Authorization: `Bearer ${token}` };
 
     try {
@@ -169,7 +169,12 @@ export default function NewCapturePage() {
               className={inputCls}
               type="password"
               value={token}
-              onChange={(e) => setToken(e.target.value)}
+              onChange={(e) => {
+                // Stored as soon as it is pasted, so the owner can also open a
+                // private capture (/capture/[id]) in this tab without uploading.
+                setToken(e.target.value);
+                storeToken(e.target.value);
+              }}
               placeholder="Paste a Janua bearer token (web SSO coming)"
             />
           </div>
