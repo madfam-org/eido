@@ -35,6 +35,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_db()
     await init_redis()
     yield
+    # Let handoffs of the last publishes finish while the database is open.
+    from eido_api.services.handoff import drain_handoffs
+    await drain_handoffs()
     await close_redis()
     await close_db()
     logger.info("Eido API shutdown — form returns to void.")

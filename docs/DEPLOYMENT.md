@@ -143,4 +143,16 @@ Provisioning brings up *shells*. Remaining product engineering:
    `eido-cdn-production` bucket allowing GET from `https://eido.cam`.
 4. **Auth on capture mutations + a Janua service token for handoffs** — the
    upload page pastes a Janua bearer token until the eido-web OIDC client is
-   registered; the eido→sibling hand-offs need an M2M token.
+   registered; the eido→sibling hand-offs need an M2M token. The capture page
+   (`/capture/[id]`) sends that same pasted token (this tab's `sessionStorage`,
+   `apps/web/src/lib/januaToken.ts`) when it loads a capture and its
+   annotations and when it retries a hand-off.
+   The API requires `iss` = `JANUA_ISSUER` (default `https://auth.madfam.io`)
+   and `aud` in `JANUA_AUDIENCES` (default `janua.dev` only); the defaults
+   are the production values, so the manifests set neither. A pasted Janua
+   session token (`janua.dev`, no `client_id`) is accepted. Do not add
+   `eido-api` (or any audience) until it is on Janua's reserved-audience
+   registry (`reserved_oauth_boundaries.py`) and no other client row carries
+   it: `eido-api` is not reserved today, so anyone could otherwise register a
+   client that mints tokens eido accepts. Administration is the `eido:admin`
+   application role on a first-party session token only.

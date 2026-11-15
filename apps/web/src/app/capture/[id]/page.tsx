@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Canvas } from "@react-three/fiber";
@@ -9,8 +9,23 @@ import { motion, AnimatePresence } from "framer-motion";
 import useSWR from "swr";
 
 import SpzPoints, { useSpz } from "@/components/SpzPoints";
+import { authHeaders, getStoredToken } from "@/lib/januaToken";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
+
+class FetchError extends Error {
+  constructor(public status: number) {
+    super(`HTTP ${status}`);
+  }
+}
+
+// Sends the token pasted on the upload page, when there is one: a private
+// capture answers 404 to anyone but its owner (and eido:admin).
+const authFetcher = ([url, token]: [string, string | null]) =>
+  fetch(url, { headers: authHeaders(token) }).then((r) => {
+    if (!r.ok) throw new FetchError(r.status);
+    return r.json();
+  });
 
 function Loader() {
   const { progress } = useProgress();
@@ -86,15 +101,57 @@ function Scene({ meshUrl, splatUrl }: { meshUrl: string; splatUrl: string }) {
 
 const FORMATS = ["glb", "spz", "obj", "usdz", "ply"];
 
+const DOWNLOAD_ERRORS: Record<number, string> = {
+  401: "Raw formats (.ply, .obj) need you signed in: paste your Janua token on the upload page.",
+  402: "Raw formats (.ply, .obj) need a Pro subscription.",
+  404: "Capture not found.",
+  409: "This capture is still processing.",
+};
+
+/**
+ * Download an export with the stored token, so the owner of a private capture
+ * can download it; a public capture's ungated formats need no token. The API
+ * answers with a pre-signed URL; the file is fetched from it and saved through
+ * an object URL. The file is held in memory until it is saved.
+ */
+async function downloadExport(
+  captureId: string,
+  fmt: string,
+  token: string | null,
+): Promise<string | null> {
+  const meta = await fetch(`/api/v1/export/${captureId}?format=${fmt}`, {
+    headers: authHeaders(token),
+  });
+  if (!meta.ok) return DOWNLOAD_ERRORS[meta.status] ?? `Download failed (HTTP ${meta.status}).`;
+  const { download_url } = await meta.json();
+  const file = await fetch(download_url);
+  if (!file.ok) return `Download failed (HTTP ${file.status}).`;
+  const objectUrl = URL.createObjectURL(await file.blob());
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = `eido-${captureId}.${fmt}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+  return null;
+}
+
 export default function CapturePage() {
   const params = useParams<{ id: string }>();
-  const { data: capture, isLoading } = useSWR(
-    params.id ? `/api/v1/captures/${params.id}` : null,
-    fetcher
+  // undefined until sessionStorage has been read (client only), so the first
+  // request already carries the token when there is one.
+  const [token, setToken] = useState<string | null | undefined>(undefined);
+  useEffect(() => setToken(getStoredToken()), []);
+  const tokenRead = token !== undefined;
+
+  const { data: capture, error, isLoading } = useSWR(
+    params.id && tokenRead ? [`/api/v1/captures/${params.id}`, token] : null,
+    authFetcher
   );
   const { data: annotations } = useSWR(
-    params.id ? `/api/v1/social/captures/${params.id}/annotations` : null,
-    fetcher
+    params.id && tokenRead ? [`/api/v1/social/captures/${params.id}/annotations`, token] : null,
+    authFetcher
   );
   const { data: embedData } = useSWR(
     capture?.is_public ? `/api/v1/export/${params.id}/embed` : null,
@@ -104,9 +161,23 @@ export default function CapturePage() {
   const [activeTab, setActiveTab] = useState<"viewer" | "info" | "embed" | "dispatch">("viewer");
   const [embedCopied, setEmbedCopied] = useState(false);
   const [likeLoading, setLikeLoading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
-  if (isLoading) return <CapturePageSkeleton />;
-  if (!capture) return <div className="p-8 text-slate-400">Capture not found.</div>;
+  if (!tokenRead || isLoading) return <CapturePageSkeleton />;
+  if (!capture) {
+    const status = error instanceof FetchError ? error.status : undefined;
+    if (status !== undefined && status !== 404) {
+      return <div className="p-8 text-slate-400">Could not load this capture (HTTP {status}).</div>;
+    }
+    return <CaptureNotFound hasToken={Boolean(token)} />;
+  }
+
+  const download = (fmt: string) => {
+    setDownloadError(null);
+    downloadExport(params.id, fmt, token ?? null)
+      .then(setDownloadError)
+      .catch(() => setDownloadError("Download failed."));
+  };
 
   const copyEmbed = () => {
     if (embedData?.iframe_snippet) {
@@ -118,7 +189,6 @@ export default function CapturePage() {
 
   const ECOSYSTEM_TARGETS = [
     { id: "blueprint-harvester", label: "📦 Blueprint Harvester", desc: "Archive to global 3D data lake" },
-    { id: "yantra4d", label: "⚙️ Yantra4D", desc: "Open in parametric CAD engine" },
     { id: "factlas", label: "🌍 Factlas", desc: "Pin to geospatial atlas" },
     { id: "ceq", label: "🧠 CEQ", desc: "Generate marketing renders" },
   ];
@@ -140,15 +210,15 @@ export default function CapturePage() {
         >
           👁 Eido
         </span>
-        <div className="flex gap-2">
-          {capture.is_public && (
-            <a
-              href={`/api/v1/export/${params.id}?format=glb`}
-              className="px-3 py-1.5 text-xs rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 transition-colors"
-            >
-              ↓ Download
-            </a>
-          )}
+        <div className="flex items-center gap-2">
+          {downloadError && <span className="text-[11px] text-rose-400">{downloadError}</span>}
+          <button
+            type="button"
+            onClick={() => download("glb")}
+            className="px-3 py-1.5 text-xs rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 transition-colors"
+          >
+            ↓ Download
+          </button>
         </div>
       </nav>
 
@@ -268,15 +338,17 @@ export default function CapturePage() {
                 <p className="text-slate-500 text-xs">Download formats</p>
                 <div className="grid grid-cols-3 gap-1.5">
                   {FORMATS.map((fmt) => (
-                    <a
+                    <button
                       key={fmt}
-                      href={`/api/v1/export/${params.id}?format=${fmt}`}
+                      type="button"
+                      onClick={() => download(fmt)}
                       className="text-center text-[11px] py-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 transition-colors uppercase"
                     >
                       .{fmt}
-                    </a>
+                    </button>
                   ))}
                 </div>
+                {downloadError && <p className="text-[11px] text-rose-400">{downloadError}</p>}
               </div>
             )}
 
@@ -303,7 +375,13 @@ export default function CapturePage() {
               </div>
             )}
 
-            {activeTab === "dispatch" && (
+            {activeTab === "dispatch" && !capture.is_public && (
+              <p className="text-xs text-slate-400">
+                This capture is private. Publish it before sending it to other platforms.
+              </p>
+            )}
+
+            {activeTab === "dispatch" && capture.is_public && (
               <div className="space-y-3">
                 <p className="text-xs text-slate-400">
                   Send this capture to an Eido ecosystem platform.
@@ -315,7 +393,7 @@ export default function CapturePage() {
                     onClick={() =>
                       fetch(`/api/v1/handoffs/${params.id}/retry`, {
                         method: "POST",
-                        headers: { "Content-Type": "application/json" },
+                        headers: { "Content-Type": "application/json", ...authHeaders(token ?? null) },
                         body: JSON.stringify({ target: t.id }),
                       })
                     }
@@ -331,6 +409,34 @@ export default function CapturePage() {
           </div>
         </aside>
       </div>
+    </div>
+  );
+}
+
+function CaptureNotFound({ hasToken }: { hasToken: boolean }) {
+  return (
+    <div className="p-8 max-w-md space-y-3 text-sm text-slate-400">
+      <p className="text-slate-200">Capture not found.</p>
+      {hasToken ? (
+        <p>
+          It does not exist, or it is private and the token stored in this tab is not its
+          owner&apos;s. Tokens expire: if this capture is yours, paste a fresh Janua token on
+          the{" "}
+          <Link href="/capture/new" className="text-sky-400 hover:text-sky-300">
+            upload page
+          </Link>{" "}
+          and reload this page.
+        </p>
+      ) : (
+        <p>
+          It is private, or it does not exist. Private captures are visible only to their
+          owner. If this capture is yours, paste your Janua token on the{" "}
+          <Link href="/capture/new" className="text-sky-400 hover:text-sky-300">
+            upload page
+          </Link>{" "}
+          in this tab, then reload this page.
+        </p>
+      )}
     </div>
   );
 }

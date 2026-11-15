@@ -5,6 +5,8 @@ GET  /api/v1/export/{capture_id}?format=glb|obj|usdz|ply|spz — signed download
 GET  /api/v1/export/{capture_id}/embed                        — embed iframe snippet
 GET  /embed/{capture_id}                                      — embeddable viewer (no auth)
 """
+import html
+import json
 import logging
 from typing import Annotated
 from uuid import UUID
@@ -19,14 +21,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eido_api.config import get_settings
 from eido_api.db.session import get_db
-from eido_api.models import Capture, CaptureStatus, User
-from eido_api.services.provisioning import get_optional_provisioned_user
+from eido_api.models import Capture, CaptureStatus
+from eido_api.services.access import Viewer, get_optional_viewer, get_readable_capture
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 router = APIRouter()
 
 SUPPORTED_FORMATS = {"glb", "obj", "usdz", "ply", "spz"}
+# Raw formats need a paid tier. The tier comes from the verified token (Dhanam
+# entitlement claim); any value not listed here, Janua's `community` included,
+# counts as the lowest tier.
+GATED_FORMATS = {"ply", "obj"}
+TIERS_ALLOWED_GATED_FORMATS = {"pro", "studio"}
+
 FORMAT_CDN_KEY_MAP = {
     "glb": "output.glb",
     "spz": "output.spz",
@@ -73,28 +81,31 @@ async def get_download_url(
     capture_id: UUID,
     format: str = Query("glb", description="Export format: glb|obj|usdz|ply|spz"),
     db: Annotated[AsyncSession, Depends(get_db)] = None,
-    user: User | None = Depends(get_optional_provisioned_user),
+    viewer: Viewer | None = Depends(get_optional_viewer),
 ) -> DownloadResponse:
     """
     Return a pre-signed download URL for the specified format.
-    Private captures require authentication.
-    .ply and .obj formats require a Pro or Studio tier (Dhanam entitlement).
+    A private capture answers 404 to everyone but its owner and eido:admin.
+    .ply and .obj need a signed-in caller on the Pro or Studio tier (Dhanam
+    entitlement); other formats of a public capture need no token.
     """
     if format not in SUPPORTED_FORMATS:
         raise HTTPException(status_code=422, detail=f"Unsupported format. Choose from: {SUPPORTED_FORMATS}")
 
-    result = await db.execute(select(Capture).where(Capture.id == capture_id))
-    capture = result.scalar_one_or_none()
-    if not capture:
-        raise HTTPException(status_code=404, detail="Capture not found.")
-    if not capture.is_public and (not user or str(capture.author_id) != str(user.id)):
-        raise HTTPException(status_code=403, detail="Private capture — authentication required.")
+    capture = await get_readable_capture(db, capture_id, viewer)
     if capture.status != CaptureStatus.READY:
         raise HTTPException(status_code=409, detail="Capture is still processing.")
 
-    # Tier gating: raw formats (.ply, .obj) are Pro+ only
-    # SoC: entitlement check is delegated to Dhanam, not owned by Eido
-    if format in ("ply", "obj") and user and user.tier == "free":
+    # Tier gating: raw formats (.ply, .obj) are Pro+ only, and need a signed-in
+    # caller. SoC: the entitlement is Dhanam's; eido only reads the claim.
+    if format in GATED_FORMATS and viewer is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Raw format export (.ply, .obj) requires signing in with a Pro subscription.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    tier = (viewer.janua.tier or "").strip().lower() if viewer else ""
+    if format in GATED_FORMATS and tier not in TIERS_ALLOWED_GATED_FORMATS:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail="Raw format export (.ply, .obj) requires a Pro subscription. Upgrade at eido.cam/upgrade.",
@@ -130,10 +141,12 @@ async def get_embed_code(
         raise HTTPException(status_code=404, detail="Capture not found or not public.")
 
     embed_url = f"https://eido.cam/embed/{capture_id}"
+    # The snippet is pasted into other people's pages: every interpolated value
+    # is escaped for an HTML attribute.
     iframe_snippet = (
-        f'<iframe src="{embed_url}" width="{width}" height="{height}" '
+        f'<iframe src="{html.escape(embed_url, quote=True)}" width="{width}" height="{height}" '
         f'frameborder="0" allow="xr-spatial-tracking" allowfullscreen '
-        f'title="{capture.title}"></iframe>'
+        f'title="{html.escape(capture.title or "", quote=True)}"></iframe>'
     )
 
     return EmbedResponse(
@@ -159,13 +172,20 @@ async def embeddable_viewer(
     if not capture:
         return HTMLResponse("<h1>Capture not found or not public.</h1>", status_code=404)
 
-    splat_url = capture.splat_url or capture.mesh_url or ""
-    html = f"""<!DOCTYPE html>
+    # Served on the web origin through the /api rewrite, where the pasted Janua
+    # token lives in sessionStorage and the CSP allows inline script, so every
+    # interpolated value is escaped for its context: HTML text and attributes
+    # with html.escape, the script string as JSON with "<" escaped so it cannot
+    # close the <script> element.
+    title_html = html.escape(capture.title or "", quote=True)
+    capture_path = html.escape(str(capture_id), quote=True)
+    splat_url_js = json.dumps(capture.splat_url or capture.mesh_url or "").replace("<", "\\u003c")
+    page = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{capture.title} — Eido</title>
+  <title>{title_html} — Eido</title>
   <style>
     * {{ margin: 0; padding: 0; box-sizing: border-box; }}
     body {{ background: #0a0a0f; overflow: hidden; }}
@@ -180,8 +200,8 @@ async def embeddable_viewer(
 </head>
 <body>
   <canvas id="c"></canvas>
-  <a href="https://eido.cam/capture/{capture_id}" target="_blank" id="eido-badge">
-    👁 {capture.title} — Eido
+  <a href="https://eido.cam/capture/{capture_path}" target="_blank" rel="noopener" id="eido-badge">
+    👁 {title_html} — Eido
   </a>
   <script type="module">
     import * as GaussianSplats3D from 'https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@latest/+esm';
@@ -190,11 +210,11 @@ async def embeddable_viewer(
       initialCameraPosition: [0, 0, 3],
       initialCameraLookAt: [0, 0, 0],
     }});
-    viewer.addSplatScene('{splat_url}', {{
+    viewer.addSplatScene({splat_url_js}, {{
       progressiveLoad: true,
     }}).then(() => viewer.start());
   </script>
 </body>
 </html>"""
 
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=page)

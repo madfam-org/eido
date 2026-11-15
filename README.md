@@ -89,10 +89,53 @@ smoke for it.
 - `postcss@8.4.31`, pinned exactly by `next@15.5.27`, still shows up in
   `pnpm audit`. It is build-time only and not part of the standalone server.
 - The API verifies Janua tokens with PyJWT (`apps/api/src/eido_api/auth.py`):
-  RS256 only, the JWKS key named by `kid`, `exp` required, 30 s leeway, and one
-  rate-limited JWKS refetch on an unknown `kid`. It does not check `aud` or
-  `iss` yet, because no audience or issuer is configured for this service. Tracked in
-  [Pending work](#pending-work).
+  RS256 only, the JWKS key named by `kid` when the token names one, `exp`
+  required, 30 s leeway, and one rate-limited JWKS refetch on an unknown `kid`.
+  A token with no `kid` (Janua's first-party session tokens carry none) is
+  verified against the published RS256 signing keys; if none verifies, the
+  JWKS is refetched once (same 60 s limit) and the token tried again. The JWKS
+  is re-read after 1 h. `type` must be `"access"`. `iss` must equal
+  `JANUA_ISSUER` (default `https://auth.madfam.io`) and `aud` must be in
+  `JANUA_AUDIENCES` (default `janua.dev` only). `janua.dev` is Janua's shared
+  audience, so a token on it must be a person's first-party session access
+  token (no `client_id`, no `scope`, not a machine token). `eido-api` is not
+  on Janua's reserved-audience registry, so that audience is added only
+  after it is reserved there for eido's own client (item 3 in
+  [Pending work](#pending-work)).
+- Authorization uses the application role `eido:admin`, and only from a
+  first-party session token. A bare `admin` organization role grants nothing,
+  and neither does `eido:admin` on a token issued to an OAuth client.
+- Capture visibility: a public capture is readable by anyone; a private one
+  only by its owner or an `eido:admin`. Everyone else gets 404, so a private
+  capture's existence is not disclosed. Every route that takes a capture id
+  applies this first: detail, job status, export, annotations, comments,
+  likes, handoffs, process, publish, and the captures listed and counted
+  inside a collection. Handoffs only ever send a public capture (a private
+  one answers 409). Raw-format export (`.ply`, `.obj`) needs a signed-in
+  caller on the `pro` or `studio` tier. The web capture page sends the Janua token pasted
+  on the upload page (kept in that tab's `sessionStorage`), so the owner sees
+  their private capture after uploading in the same tab. Without a stored
+  token, a private capture shows as "private, or does not exist", with a link
+  to the upload page. Downloads also send it. There is no web sign-in yet.
+
+## Known limits
+
+These are known and not fixed; do not read the access rule above as more
+than it is.
+
+- **Artifacts on the CDN are public by URL.** Splats, meshes and thumbnails
+  live on the public CDN (`cdn.eido.cam`) under the capture id, readable by
+  anyone who knows that id whatever `is_public` says. The 404 rule protects
+  the capture record, not the files. Closing this needs private storage with
+  signed URLs.
+- **`eido:admin` is global.** Janua grants it per organization, but captures
+  have no organization in eido, so an `eido:admin` of any organization can
+  read every private capture.
+- **Revocation waits for expiry.** A session revoked in Janua keeps working in
+  eido until its token expires; eido does not check revocation.
+- **The capture page crashes when the 3D canvas mounts.** See the HDR/CSP
+  item in Known issues: the blocked HDR throws once `<Canvas>` mounts, and
+  switching tabs then crashes the page.
 - Python dependency note: `sqlalchemy` is pinned `<2.1`, because 2.1 drops
   greenlet from the default install and `sqlalchemy.ext.asyncio` then fails to
   import.
@@ -143,7 +186,7 @@ Eido maintains strict architectural isolation to prevent monolithic bloat, passi
 
 *   **Eido → Janua:** Zero reliance on third-party identity providers. Janua operates as the sovereign Identity Master, managing access controls, API tokens for edge capture, and user authentication across `eido.cam`.
 *   **Eido → Blueprint Harvester (`.tube`):** Upon publishing a capture, Eido pushes the canonical mesh, SPZ files, tags, and spatial metadata to the data lake for global indexing and archival.
-*   **Eido → Yantra4D (`.io`):** Through the advanced Splat-to-Mesh pipeline, Eido converts volumetric fields into rigid, metric-scaled Boundary Representations. These are streamed directly into the Hyperobjects Commons for parametric enclosure engineering.
+*   **Eido → Yantra4D (`api.yantra4d.com`, not built):** Through the advanced Splat-to-Mesh pipeline, Eido converts volumetric fields into rigid, metric-scaled Boundary Representations. These are streamed directly into the Hyperobjects Commons for parametric enclosure engineering. Vision only: eido has no Yantra4D client today; `YANTRA4D_URL` is configured (`https://api.yantra4d.com`) but nothing reads it, and the web dispatch tab no longer offers a Yantra4D button.
 *   **Eido → Factlas:** Drone photogrammetry processes into georeferenced 3D Tiles, pushing spatial coordinates directly to the global spatial map.
 *   **Eido → CEQ:** Feeds clean, 360-degree turntable renders into ComfyUI workflows for automated marketing generation.
 
@@ -253,7 +296,7 @@ The single, current pending-work list for this repository (verified against
 |---|------|----------------|----------|------|------|
 | 1 | GPU capacity for reconstruction, and a runnable 3DGS stage | No capture has produced a `.spz` in production. The cluster has no GPU node, the orchestration worker shells `docker run --gpus all` from a CPU-only pod, and the 3DGS trainer calls a module that does not exist | P1 | owner (GPU capacity), eng (trainer and dispatch) | [Current Status](#current-status-2026-10-02) |
 | 2 | Provision R2 storage and the Janua service client | Uploads and the Factlas hand-off cannot complete in production without them (unprovisioned at the last recorded check, 2026-07-10) | P1 | owner | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
-| 3 | Add audience and issuer configuration for Janua token checks | The API has no audience or issuer setting yet; once Janua's client for eido is registered, `aud` and `iss` should be required | P2 | owner (client and audience), eng (settings and tests) | #27, [janua `ISSUER_AND_JWKS.md`](https://github.com/madfam-org/janua/blob/main/docs/reference/ISSUER_AND_JWKS.md) |
+| 3 | Reserve an `eido-api` audience in Janua and register eido's client with it | Only first-party `janua.dev` session tokens are accepted (default `JANUA_AUDIENCES`). `eido-api` is not on Janua's reserved-audience registry (`reserved_oauth_boundaries.py`), so it is added to `JANUA_AUDIENCES` only once it is reserved there and no other client row carries it; OAuth-client and machine tokens need it | P2 | owner | [janua `ISSUER_AND_JWKS.md`](https://github.com/madfam-org/janua/blob/main/docs/reference/ISSUER_AND_JWKS.md) |
 | 4 | Self-host the viewer's HDR environment map | `/capture/[id]` stays on its loading fallback because the CSP blocks drei's third-party HDR; serve it from `public/` or `cdn.eido.cam` rather than widening the CSP | P2 | eng | [Known issues](#known-issues) |
 | 5 | Re-verify production health | Deployment state in this README is "last known good" from 2026-07-10, not re-checked | P2 | owner | [Current Status](#current-status-2026-10-02) |
 | 6 | Component tests for `apps/web` | Its only test is the image-optimizer config guard | P3 | eng | `apps/web/tests/` |

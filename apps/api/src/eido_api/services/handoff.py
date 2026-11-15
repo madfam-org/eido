@@ -9,6 +9,7 @@ Fires webhooks from Eido to:
 
 Each dispatch is logged in the ecosystem_handoffs table for audit and retry.
 """
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -18,13 +19,18 @@ from sqlalchemy import select
 
 from eido_api.config import get_settings
 from eido_api.db.session import async_session_maker
-from eido_api.models import Capture, EcosystemHandoff, HandoffTarget
+from eido_api.models import Capture, CaptureStatus, EcosystemHandoff, HandoffTarget
 from eido_api.services.service_auth import auth_headers
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 _TIMEOUT = httpx.Timeout(30.0)
+
+# How long dispatch waits for the request that scheduled it to commit
+# (see `_load_published_capture`): 8 reads, 0.5 s apart.
+_PUBLISHED_READ_ATTEMPTS = 8
+_PUBLISHED_READ_DELAY_S = 0.5
 
 
 async def _log_handoff(
@@ -176,17 +182,92 @@ async def _dispatch_ceq(capture: Capture) -> None:
         logger.error("Handoff → CEQ FAILED: %s", e)
 
 
+async def _load_published_capture(capture_id: str) -> Capture | None:
+    """The capture as COMMITTED, once it is public and READY; else None.
+
+    Handoffs send the title, id and artifact URLs to other platforms, so only
+    a published (public), processed capture is ever dispatched, and the check
+    is made on what the database has committed, not on the caller's word.
+
+    Both callers schedule this (`schedule_handoffs`) from inside a request
+    whose transaction has not committed yet: the publish route sets
+    `is_public`, the worker's status route sets READY and the artifact URLs.
+    So the row is re-read in a fresh session a few times before giving up: a
+    publish that committed is seen within the wait, and a publish that rolled
+    back is never dispatched.
+    """
+    for attempt in range(_PUBLISHED_READ_ATTEMPTS):
+        if attempt:
+            await asyncio.sleep(_PUBLISHED_READ_DELAY_S)
+        async with async_session_maker() as db:
+            result = await db.execute(select(Capture).where(Capture.id == capture_id))
+            capture: Capture | None = result.scalar_one_or_none()
+        if capture is None:
+            logger.error("dispatch_all_handoffs: capture %s not found", capture_id)
+            return None
+        if capture.is_public and capture.status == CaptureStatus.READY:
+            return capture
+    logger.warning(
+        "dispatch_all_handoffs: capture %s is not public and READY in the database; "
+        "refusing to dispatch",
+        capture_id,
+    )
+    return None
+
+
+_pending_dispatches: set[asyncio.Task[None]] = set()
+
+
+def _dispatch_finished(task: asyncio.Task[None]) -> None:
+    _pending_dispatches.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("dispatch_all_handoffs failed", exc_info=task.exception())
+
+
+def schedule_handoffs(capture_id: str) -> None:
+    """Start dispatch as its own task, to run once the calling request commits.
+
+    Call this from a request handler instead of FastAPI's BackgroundTasks:
+    on current FastAPI (observed on 0.163) a BackgroundTasks task runs to
+    completion BEFORE the request's database dependency commits, so it could
+    wait as long as it liked and never see the publish. A separate task lets
+    the request return and commit while dispatch waits for that commit
+    (`_load_published_capture`). The task is held here until it finishes;
+    the event loop keeps only a weak reference to a bare task.
+    """
+    task = asyncio.create_task(dispatch_all_handoffs(capture_id))
+    _pending_dispatches.add(task)
+    task.add_done_callback(_dispatch_finished)
+
+
+async def drain_handoffs(timeout: float = 20.0) -> None:
+    """Wait for dispatches in flight, at shutdown, before the pool closes.
+
+    A deploy stops the process; without this, a publish made in the seconds
+    before it would lose its handoffs, or deliver only some of them, with no
+    row to retry from. Bounded so shutdown fits the pod's grace period.
+    """
+    pending = set(_pending_dispatches)
+    if not pending:
+        return
+    logger.info("Waiting for %d handoff dispatch(es) before shutdown", len(pending))
+    _, unfinished = await asyncio.wait(pending, timeout=timeout)
+    if unfinished:
+        logger.error(
+            "%d handoff dispatch(es) did not finish before shutdown; "
+            "retry them from the capture's handoffs",
+            len(unfinished),
+        )
+
+
 async def dispatch_all_handoffs(capture_id: str) -> None:
     """
     Master dispatch — fires all applicable ecosystem handoffs for a published capture.
-    Runs as a FastAPI background task after publish is confirmed.
+    Scheduled with `schedule_handoffs`; acts only on what the database has committed.
     """
-    async with async_session_maker() as db:
-        result = await db.execute(select(Capture).where(Capture.id == capture_id))
-        capture = result.scalar_one_or_none()
-        if not capture:
-            logger.error("dispatch_all_handoffs: capture %s not found", capture_id)
-            return
+    capture = await _load_published_capture(capture_id)
+    if capture is None:
+        return
 
     # Always fire: Blueprint Harvester (permanent ledger)
     await _dispatch_blueprint_harvester(capture)

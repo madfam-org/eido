@@ -24,6 +24,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from eido_api.auth import JanuaUser, get_current_user, get_optional_user
 from eido_api.db.session import Base, get_db
 from eido_api.models import Capture, CaptureStatus
+from eido_api.services.access import (
+    Viewer,
+    can_read_capture,
+    get_optional_viewer,
+    get_readable_capture,
+    get_viewer,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -103,7 +110,7 @@ async def _get_owned_collection(
     col = result.scalar_one_or_none()
     if not col:
         raise HTTPException(status_code=404, detail="Collection not found.")
-    if str(col.author_id) != user.id and "admin" not in user.roles:
+    if str(col.author_id) != user.id and not user.is_admin:
         raise HTTPException(status_code=403, detail="Not the collection owner.")
     return col
 
@@ -201,8 +208,13 @@ async def get_collection(
     collection_id: UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     user: JanuaUser | None = Depends(get_optional_user),
+    viewer: Viewer | None = Depends(get_optional_viewer),
 ) -> CollectionDetail:
-    """Get a collection with its captures."""
+    """Get a collection with its captures.
+
+    Only captures the caller may read are listed (services/access.py): a
+    private capture in a public collection is left out for everyone else.
+    """
     result = await db.execute(
         select(Collection).where(
             Collection.id == collection_id,
@@ -223,13 +235,17 @@ async def get_collection(
     )
     capture_ids = [row.capture_id for row in cc_result.fetchall()]
 
+    # Count and list only captures the caller can read; a private capture in a
+    # public collection is invisible to everyone but its owner and eido:admin.
     captures_data = []
+    readable_count = 0
     for cid in capture_ids:
-        cap_result = await db.execute(
-            select(Capture).where(Capture.id == cid, Capture.status == CaptureStatus.READY)
-        )
+        cap_result = await db.execute(select(Capture).where(Capture.id == cid))
         cap = cap_result.scalar_one_or_none()
-        if cap:
+        if cap is None or not can_read_capture(cap, viewer):
+            continue
+        readable_count += 1
+        if cap.status == CaptureStatus.READY:
             captures_data.append({
                 "id": str(cap.id), "title": cap.title,
                 "thumbnail_url": cap.thumbnail_url, "mode": cap.mode.value if cap.mode else "3dgs",
@@ -238,7 +254,7 @@ async def get_collection(
     return CollectionDetail(
         id=str(col.id), author_id=str(col.author_id),
         title=col.title, description=col.description,
-        is_public=col.is_public, capture_count=len(capture_ids),
+        is_public=col.is_public, capture_count=readable_count,
         cover_thumbnail_url=None, created_at=str(col.created_at),
         captures=captures_data,
     )
@@ -281,13 +297,12 @@ async def add_capture_to_collection(
     collection_id: UUID,
     data: AddCaptureRequest,
     user: Annotated[JanuaUser, Depends(get_current_user)],
+    viewer: Annotated[Viewer, Depends(get_viewer)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
     col = await _get_owned_collection(collection_id, user, db)
-
-    cap_result = await db.execute(select(Capture.id).where(Capture.id == data.capture_id))
-    if not cap_result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Capture not found.")
+    # Only a capture the caller can read may be added (404 otherwise).
+    await get_readable_capture(db, data.capture_id, viewer)
 
     # Idempotent insert
     existing = await db.execute(

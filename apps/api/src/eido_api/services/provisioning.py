@@ -10,37 +10,85 @@ Before this existed the ``users`` table was never written, so every capture
 ingest violated ``captures.author_id NOT NULL`` and ``list_my_jobs`` compared a
 local UUID column against the Janua ``sub`` string (never matching).
 """
+import hashlib
 from typing import Annotated
 
 from fastapi import Depends
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eido_api.auth import JanuaUser, get_current_user, get_optional_user
 from eido_api.db.session import get_db
 from eido_api.models import User
 
+_USERNAME_MAX = 100  # users.username is String(100); display_name is kept to the same length
 
-async def get_or_create_user(db: AsyncSession, janua: JanuaUser) -> User:
-    """Return the local ``User`` for a Janua identity, creating it if absent."""
-    result = await db.execute(select(User).where(User.janua_id == janua.id))
-    user = result.scalar_one_or_none()
-    if user is not None:
-        return user
 
-    # `sub` is globally unique, so a sub-derived username is collision-free when
-    # Janua supplies no preferred_username.
-    username = janua.username or f"user_{janua.id[:12]}"
+def _generated_username(janua_sub: str) -> str:
+    """A username derived from a hash of the whole `sub`.
+
+    A prefix of `sub` collides for service accounts (every machine subject
+    starts with `service-account:`); a hash of the full value does not.
+    """
+    return f"user_{hashlib.sha256(janua_sub.encode()).hexdigest()[:16]}"
+
+
+def _fits(value: str | None) -> str | None:
+    """The token's name when the username column can hold it, else None.
+
+    A longer value would fail the insert with a data error, not a unique
+    violation, and turn a first request into a 500.
+    """
+    return value if value and len(value) <= _USERNAME_MAX else None
+
+
+async def _select_user(db: AsyncSession, janua_sub: str) -> User | None:
+    result = await db.execute(select(User).where(User.janua_id == janua_sub))
+    user: User | None = result.scalar_one_or_none()
+    return user
+
+
+async def _insert_user(db: AsyncSession, janua: JanuaUser, username: str) -> User | None:
+    """Insert in a SAVEPOINT; on a unique violation roll it back and return None."""
     user = User(
         janua_id=janua.id,
         username=username,
-        display_name=janua.username or username,
+        display_name=_fits(janua.username) or username,
         tier=janua.tier or "free",
     )
-    db.add(user)
-    await db.flush()
+    try:
+        async with db.begin_nested():
+            db.add(user)
+            await db.flush()
+    except IntegrityError:
+        return None
     await db.refresh(user)
     return user
+
+
+async def get_or_create_user(db: AsyncSession, janua: JanuaUser) -> User:
+    """Return the local ``User`` for a Janua identity, creating it if absent.
+
+    Two first requests from the same person can race to insert the row. The
+    loser's insert hits the unique constraint inside a SAVEPOINT, which is
+    rolled back, and the row the winner inserted is selected instead. If the
+    token's ``preferred_username`` is already taken by someone else, the
+    hash-derived username is used.
+    """
+    user = await _select_user(db, janua.id)
+    if user is not None:
+        return user
+
+    generated = _generated_username(janua.id)
+    for username in dict.fromkeys([_fits(janua.username) or generated, generated]):
+        created = await _insert_user(db, janua, username)
+        if created is not None:
+            return created
+        existing = await _select_user(db, janua.id)
+        if existing is not None:
+            return existing
+    raise RuntimeError("Could not provision a local user for this Janua identity")
 
 
 async def get_provisioned_user(

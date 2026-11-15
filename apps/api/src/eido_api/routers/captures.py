@@ -4,7 +4,8 @@ Capture Router — Ingest, Publish & Portfolio Listing
 POST /api/v1/captures/ingest   — register a new capture + pre-signed S3 upload URL
 POST /api/v1/captures/{id}/publish — mark capture as public, fire ecosystem handoffs
 GET  /api/v1/captures/         — paginated portfolio listing (public)
-GET  /api/v1/captures/{id}     — single capture detail
+GET  /api/v1/captures/{id}     — single capture detail (public, or owner / eido:admin;
+                                  404 otherwise — see services/access.py)
 """
 import logging
 import uuid
@@ -21,6 +22,13 @@ from eido_api.config import get_settings
 from eido_api.db.redis import enqueue_job
 from eido_api.db.session import get_db
 from eido_api.models import Capture, CaptureMode, CaptureStatus, User
+from eido_api.services.access import (
+    Viewer,
+    get_actionable_capture,
+    get_optional_viewer,
+    get_readable_capture,
+    get_viewer,
+)
 from eido_api.services.provisioning import get_provisioned_user
 
 logger = logging.getLogger(__name__)
@@ -193,18 +201,14 @@ async def trigger_processing(
     capture_id: str,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_provisioned_user),
+    viewer: Viewer = Depends(get_viewer),
 ) -> dict[str, Any]:
     """
-    Enqueue a GPU processing job for this capture.
-    Called by the mobile app after S3 upload completes.
+    Enqueue a GPU processing job for this capture (owner only).
+    Called by the mobile app after S3 upload completes. 404 to anyone who
+    cannot read the capture, 403 to a reader who is not its owner.
     """
-    result = await db.execute(select(Capture).where(Capture.id == capture_id))
-    capture = result.scalar_one_or_none()
-    if not capture:
-        raise HTTPException(status_code=404, detail="Capture not found.")
-    if capture.author_id != user.id:
-        raise HTTPException(status_code=403, detail="Not the capture owner.")
+    capture = await get_actionable_capture(db, capture_id, viewer, allow_admin=False)
 
     capture.status = CaptureStatus.QUEUED
     await db.flush()
@@ -224,28 +228,28 @@ async def trigger_processing(
 @router.post("/{capture_id}/publish", status_code=status.HTTP_200_OK)
 async def publish_capture(
     capture_id: str,
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_provisioned_user),
+    viewer: Viewer = Depends(get_viewer),
 ) -> dict[str, Any]:
     """
-    Mark a processed capture as public and fire all ecosystem handoff webhooks.
+    Mark a processed capture as public and fire all ecosystem handoff webhooks
+    (owner only; 404 to anyone who cannot read it, 403 to other readers).
     """
-    result = await db.execute(select(Capture).where(Capture.id == capture_id))
-    capture = result.scalar_one_or_none()
-    if not capture:
-        raise HTTPException(status_code=404, detail="Capture not found.")
-    if capture.author_id != user.id:
-        raise HTTPException(status_code=403, detail="Not the capture owner.")
+    capture = await get_actionable_capture(db, capture_id, viewer, allow_admin=False)
     if capture.status != CaptureStatus.READY:
         raise HTTPException(status_code=409, detail=f"Capture is not ready (status: {capture.status}).")
+
+    if capture.is_public:
+        # Already published: nothing changes and nothing is sent again.
+        return {"status": "published", "capture_id": capture_id}
 
     capture.is_public = True
     await db.flush()
 
-    # Fire ecosystem handoffs in background
-    from eido_api.services.handoff import dispatch_all_handoffs
-    background_tasks.add_task(dispatch_all_handoffs, str(capture_id))
+    # Fire ecosystem handoffs once this request has committed (not through
+    # BackgroundTasks, which finish before the commit; see schedule_handoffs).
+    from eido_api.services.handoff import schedule_handoffs
+    schedule_handoffs(str(capture_id))
 
     logger.info("Capture published", extra={"capture_id": capture_id})
     return {"status": "published", "capture_id": capture_id}
@@ -271,10 +275,11 @@ async def list_captures(
 
 
 @router.get("/{capture_id}", response_model=CaptureResponse)
-async def get_capture(capture_id: str, db: AsyncSession = Depends(get_db)) -> CaptureResponse:
-    """Single capture detail."""
-    result = await db.execute(select(Capture).where(Capture.id == capture_id))
-    capture = result.scalar_one_or_none()
-    if not capture:
-        raise HTTPException(status_code=404, detail="Capture not found.")
+async def get_capture(
+    capture_id: str,
+    db: AsyncSession = Depends(get_db),
+    viewer: Viewer | None = Depends(get_optional_viewer),
+) -> CaptureResponse:
+    """Single capture detail. A private capture is 404 to all but its owner and eido:admin."""
+    capture = await get_readable_capture(db, capture_id, viewer)
     return _capture_to_response(capture)
