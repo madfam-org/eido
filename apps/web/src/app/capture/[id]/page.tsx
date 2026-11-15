@@ -101,6 +101,42 @@ function Scene({ meshUrl, splatUrl }: { meshUrl: string; splatUrl: string }) {
 
 const FORMATS = ["glb", "spz", "obj", "usdz", "ply"];
 
+const DOWNLOAD_ERRORS: Record<number, string> = {
+  401: "Raw formats (.ply, .obj) need you signed in: paste your Janua token on the upload page.",
+  402: "Raw formats (.ply, .obj) need a Pro subscription.",
+  404: "Capture not found.",
+  409: "This capture is still processing.",
+};
+
+/**
+ * Download an export with the stored token, so the owner of a private capture
+ * can download it; a public capture's ungated formats need no token. The API
+ * answers with a pre-signed URL; the file is fetched from it and saved through
+ * an object URL. The file is held in memory until it is saved.
+ */
+async function downloadExport(
+  captureId: string,
+  fmt: string,
+  token: string | null,
+): Promise<string | null> {
+  const meta = await fetch(`/api/v1/export/${captureId}?format=${fmt}`, {
+    headers: authHeaders(token),
+  });
+  if (!meta.ok) return DOWNLOAD_ERRORS[meta.status] ?? `Download failed (HTTP ${meta.status}).`;
+  const { download_url } = await meta.json();
+  const file = await fetch(download_url);
+  if (!file.ok) return `Download failed (HTTP ${file.status}).`;
+  const objectUrl = URL.createObjectURL(await file.blob());
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = `eido-${captureId}.${fmt}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+  return null;
+}
+
 export default function CapturePage() {
   const params = useParams<{ id: string }>();
   // undefined until sessionStorage has been read (client only), so the first
@@ -125,6 +161,7 @@ export default function CapturePage() {
   const [activeTab, setActiveTab] = useState<"viewer" | "info" | "embed" | "dispatch">("viewer");
   const [embedCopied, setEmbedCopied] = useState(false);
   const [likeLoading, setLikeLoading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   if (!tokenRead || isLoading) return <CapturePageSkeleton />;
   if (!capture) {
@@ -134,6 +171,13 @@ export default function CapturePage() {
     }
     return <CaptureNotFound hasToken={Boolean(token)} />;
   }
+
+  const download = (fmt: string) => {
+    setDownloadError(null);
+    downloadExport(params.id, fmt, token ?? null)
+      .then(setDownloadError)
+      .catch(() => setDownloadError("Download failed."));
+  };
 
   const copyEmbed = () => {
     if (embedData?.iframe_snippet) {
@@ -166,15 +210,15 @@ export default function CapturePage() {
         >
           👁 Eido
         </span>
-        <div className="flex gap-2">
-          {capture.is_public && (
-            <a
-              href={`/api/v1/export/${params.id}?format=glb`}
-              className="px-3 py-1.5 text-xs rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 transition-colors"
-            >
-              ↓ Download
-            </a>
-          )}
+        <div className="flex items-center gap-2">
+          {downloadError && <span className="text-[11px] text-rose-400">{downloadError}</span>}
+          <button
+            type="button"
+            onClick={() => download("glb")}
+            className="px-3 py-1.5 text-xs rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 transition-colors"
+          >
+            ↓ Download
+          </button>
         </div>
       </nav>
 
@@ -294,15 +338,17 @@ export default function CapturePage() {
                 <p className="text-slate-500 text-xs">Download formats</p>
                 <div className="grid grid-cols-3 gap-1.5">
                   {FORMATS.map((fmt) => (
-                    <a
+                    <button
                       key={fmt}
-                      href={`/api/v1/export/${params.id}?format=${fmt}`}
+                      type="button"
+                      onClick={() => download(fmt)}
                       className="text-center text-[11px] py-1.5 rounded-lg bg-white/5 border border-white/10 text-slate-300 hover:bg-white/10 transition-colors uppercase"
                     >
                       .{fmt}
-                    </a>
+                    </button>
                   ))}
                 </div>
+                {downloadError && <p className="text-[11px] text-rose-400">{downloadError}</p>}
               </div>
             )}
 
@@ -329,7 +375,13 @@ export default function CapturePage() {
               </div>
             )}
 
-            {activeTab === "dispatch" && (
+            {activeTab === "dispatch" && !capture.is_public && (
+              <p className="text-xs text-slate-400">
+                This capture is private. Publish it before sending it to other platforms.
+              </p>
+            )}
+
+            {activeTab === "dispatch" && capture.is_public && (
               <div className="space-y-3">
                 <p className="text-xs text-slate-400">
                   Send this capture to an Eido ecosystem platform.
