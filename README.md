@@ -92,26 +92,50 @@ smoke for it.
   RS256 only, the JWKS key named by `kid` when the token names one, `exp`
   required, 30 s leeway, and one rate-limited JWKS refetch on an unknown `kid`.
   A token with no `kid` (Janua's first-party session tokens carry none) is
-  verified against the published RS256 signing keys and never forces a
-  refetch. `iss` must equal
+  verified against the published RS256 signing keys; if none verifies, the
+  JWKS is refetched once (same 60 s limit) and the token tried again. The JWKS
+  is re-read after 1 h. `type` must be `"access"`. `iss` must equal
   `JANUA_ISSUER` (default `https://auth.madfam.io`) and `aud` must be in
-  `JANUA_AUDIENCES` (default `eido-api,janua.dev`). `janua.dev` is Janua's
-  shared audience, so a token accepted only because of it must be a person's
-  first-party session access token (`type: "access"`, no `client_id`, no
-  `scope`, not a machine token). No Janua client carries the `eido-api`
-  audience yet; registering one is item 3 in
-  [Pending work](#pending-work).
-- Authorization uses the application role `eido:admin`; a bare `admin`
-  organization role grants nothing.
+  `JANUA_AUDIENCES` (default `janua.dev` only). `janua.dev` is Janua's shared
+  audience, so a token on it must be a person's first-party session access
+  token (no `client_id`, no `scope`, not a machine token). Janua does not
+  reserve audiences, so another audience such as `eido-api` is added only
+  after it has been reserved in Janua for eido's own client (item 3 in
+  [Pending work](#pending-work)).
+- Authorization uses the application role `eido:admin`, and only from a
+  first-party session token. A bare `admin` organization role grants nothing,
+  and neither does `eido:admin` on a token issued to an OAuth client.
 - Capture visibility: a public capture is readable by anyone; a private one
   only by its owner or an `eido:admin`. Everyone else gets 404, so a private
-  capture's existence is not disclosed. This covers the capture detail, job
-  status, export download, annotation list and create routes, and the captures
-  listed inside a collection. The web capture page sends the Janua token pasted
+  capture's existence is not disclosed. Every route that takes a capture id
+  applies this first: detail, job status, export, annotations, comments,
+  likes, handoffs, process, publish, and the captures listed and counted
+  inside a collection. Handoffs only ever send a public capture (a private
+  one answers 409). Raw-format export (`.ply`, `.obj`) needs a signed-in
+  caller on the `pro` or `studio` tier. The web capture page sends the Janua token pasted
   on the upload page (kept in that tab's `sessionStorage`), so the owner sees
   their private capture after uploading in the same tab. Without a stored
   token, a private capture shows as "private, or does not exist", with a link
-  to the upload page. There is no web sign-in yet.
+  to the upload page. Downloads also send it. There is no web sign-in yet.
+
+## Known limits
+
+These are known and not fixed; do not read the access rule above as more
+than it is.
+
+- **Artifacts on the CDN are public by URL.** Splats, meshes and thumbnails
+  live on the public CDN (`cdn.eido.cam`) under the capture id, readable by
+  anyone who knows that id whatever `is_public` says. The 404 rule protects
+  the capture record, not the files. Closing this needs private storage with
+  signed URLs.
+- **`eido:admin` is global.** Janua grants it per organization, but captures
+  have no organization in eido, so an `eido:admin` of any organization can
+  read every private capture.
+- **Revocation waits for expiry.** A session revoked in Janua keeps working in
+  eido until its token expires; eido does not check revocation.
+- **The capture page crashes when the 3D canvas mounts.** See the HDR/CSP
+  item in Known issues: the blocked HDR throws once `<Canvas>` mounts, and
+  switching tabs then crashes the page.
 - Python dependency note: `sqlalchemy` is pinned `<2.1`, because 2.1 drops
   greenlet from the default install and `sqlalchemy.ext.asyncio` then fails to
   import.
@@ -272,7 +296,7 @@ The single, current pending-work list for this repository (verified against
 |---|------|----------------|----------|------|------|
 | 1 | GPU capacity for reconstruction, and a runnable 3DGS stage | No capture has produced a `.spz` in production. The cluster has no GPU node, the orchestration worker shells `docker run --gpus all` from a CPU-only pod, and the 3DGS trainer calls a module that does not exist | P1 | owner (GPU capacity), eng (trainer and dispatch) | [Current Status](#current-status-2026-10-02) |
 | 2 | Provision R2 storage and the Janua service client | Uploads and the Factlas hand-off cannot complete in production without them (unprovisioned at the last recorded check, 2026-07-10) | P1 | owner | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
-| 3 | Register a Janua client with the `eido-api` audience | `iss` and `aud` are now required (default allowlist `eido-api,janua.dev`), but no Janua client issues `eido-api` tokens yet, so only first-party `janua.dev` session tokens work today; OAuth-client and machine tokens need `eido-api` | P2 | owner | [janua `ISSUER_AND_JWKS.md`](https://github.com/madfam-org/janua/blob/main/docs/reference/ISSUER_AND_JWKS.md) |
+| 3 | Reserve an `eido-api` audience in Janua and register eido's client with it | Only first-party `janua.dev` session tokens are accepted (default `JANUA_AUDIENCES`). Janua does not reserve audiences, so `eido-api` is added to `JANUA_AUDIENCES` only once Janua reserves it for eido's own client; OAuth-client and machine tokens need it | P2 | owner | [janua `ISSUER_AND_JWKS.md`](https://github.com/madfam-org/janua/blob/main/docs/reference/ISSUER_AND_JWKS.md) |
 | 4 | Self-host the viewer's HDR environment map | `/capture/[id]` stays on its loading fallback because the CSP blocks drei's third-party HDR; serve it from `public/` or `cdn.eido.cam` rather than widening the CSP | P2 | eng | [Known issues](#known-issues) |
 | 5 | Re-verify production health | Deployment state in this README is "last known good" from 2026-07-10, not re-checked | P2 | owner | [Current Status](#current-status-2026-10-02) |
 | 6 | Component tests for `apps/web` | Its only test is the image-optimizer config guard | P3 | eng | `apps/web/tests/` |

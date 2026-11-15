@@ -98,23 +98,35 @@ Two distinctions the code depends on:
   an unknown `kid` refetches the JWKS once (at most once per 60 s). A token
   with no `kid` (Janua's first-party session tokens carry none) is verified
   against every published RS256 signing key (RSA, `use` absent or `sig`, `alg`
-  absent or RS256) and never forces a refetch. `iss` must equal `JANUA_ISSUER`
-  (default `https://auth.madfam.io`) and `aud` must be in `JANUA_AUDIENCES`
-  (default `eido-api,janua.dev`). A token for `eido-api` is accepted as issued
-  (never a refresh token). A token accepted only because of Janua's shared
-  `janua.dev` audience must be a person's first-party session access token:
-  `type: "access"`, no `client_id`, no `scope`, not a machine or
-  service-principal token. The defaults are the production values, so the
-  manifests do not set these variables.
-- **Roles:** authorization uses the application role `eido:admin` only. A bare
-  `admin` (a Janua organization role) grants nothing. Do not add checks on
-  bare roles; use `<product>:<role>`.
+  absent or RS256); if none verifies, the JWKS is refetched once under the same
+  60 s limit and the token tried again. The JWKS is re-read after 1 h. `type`
+  must be `"access"`. `iss` must equal `JANUA_ISSUER` (default
+  `https://auth.madfam.io`) and `aud` must be in `JANUA_AUDIENCES` (default
+  `janua.dev` only). A `janua.dev` token must be a person's first-party
+  session access token: no `client_id`, no `scope`, not a machine or
+  service-principal token. Janua does not reserve audiences (anyone can
+  register a client claiming `eido-api`), so add an audience to
+  `JANUA_AUDIENCES` only after it has been reserved in Janua for eido's own
+  client; tokens on such an audience are accepted as issued and never grant
+  `eido:admin`. The defaults are the production values, so the manifests do
+  not set these variables.
+- **Roles:** authorization uses the application role `eido:admin` only, and
+  only from a first-party session token (`JanuaUser.first_party_session`, set
+  by the verifier). A bare `admin` (a Janua organization role) grants nothing,
+  and `eido:admin` on a token issued to an OAuth client grants nothing:
+  organization admins name those roles freely. Do not add checks on bare
+  roles; use `<product>:<role>`.
 - **Capture visibility** (`apps/api/src/eido_api/services/access.py`): a
   public capture is readable by anyone; a private one only by its owner or an
   `eido:admin`, and everyone else gets 404 (not 403), so its existence is not
-  disclosed. Every route that returns a capture, its artifact URLs, or its
-  annotations by id goes through `get_readable_capture`; annotating needs the
-  same access as reading. Pinned by `apps/api/tests/test_capture_access.py`.
+  disclosed. Every route that takes a capture id applies this first
+  (`get_readable_capture`, or `get_actionable_capture` for owner/admin
+  actions, which then answers 403 to other readers). Handoffs only ever send a
+  public capture. Pinned by `apps/api/tests/test_capture_access.py`.
+- **Known limits** (not fixed; see `README.md` → Known limits): CDN artifacts
+  are public by URL whatever `is_public` says; `eido:admin` is per
+  organization in Janua but global in eido; a session revoked in Janua works
+  until it expires; the capture page crashes when the 3D canvas mounts.
 
 ## Pending work
 

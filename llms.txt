@@ -22,12 +22,17 @@ concluding anything.
 - API: FastAPI in `apps/api`. Janua tokens verified with PyJWT: key by `kid`
   when present, RS256 only, `exp` required, 30 s leeway, one rate-limited JWKS
   re-fetch on an unknown `kid` (#27); a token with no `kid` is verified against
-  the published RS256 signing keys, never forcing a re-fetch. `iss` = `JANUA_ISSUER` (default `https://auth.madfam.io`),
-  `aud` in `JANUA_AUDIENCES` (default `eido-api,janua.dev`); a `janua.dev`-only
+  the published RS256 signing keys (one rate-limited re-fetch if none
+  verifies; JWKS TTL 1 h). `type` = `access`. `iss` = `JANUA_ISSUER` (default
+  `https://auth.madfam.io`), `aud` in `JANUA_AUDIENCES` (default `janua.dev`
+  only; add an audience only once Janua reserves it for eido). A `janua.dev`
   token must be a first-party session access token (no `client_id`/`scope`).
-- Roles: `eido:admin` only; a bare `admin` grants nothing. Captures: public is
-  readable by anyone, private only by owner or `eido:admin`, 404 to everyone
-  else (`apps/api/src/eido_api/services/access.py`).
+- Roles: `eido:admin` only, and only from a first-party session token; a bare
+  `admin` grants nothing. Captures: public is readable by anyone, private only
+  by owner or `eido:admin`, 404 to everyone else on every route taking a
+  capture id (`apps/api/src/eido_api/services/access.py`). Known limits (CDN
+  files public by URL, global admin, no revocation check, canvas crash):
+  `README.md` → Known limits.
 - Yantra4D: `YANTRA4D_URL` is `https://api.yantra4d.com`; eido has no client
   for it.
 - Georegistration is eido's concern, not Factlas's: `services/media-prep` reads

@@ -148,8 +148,10 @@ Provisioning brings up *shells*. Remaining product engineering:
    `apps/web/src/lib/januaToken.ts`) when it loads a capture and its
    annotations and when it retries a hand-off.
    The API requires `iss` = `JANUA_ISSUER` (default `https://auth.madfam.io`)
-   and `aud` in `JANUA_AUDIENCES` (default `eido-api,janua.dev`); the defaults
+   and `aud` in `JANUA_AUDIENCES` (default `janua.dev` only); the defaults
    are the production values, so the manifests set neither. A pasted Janua
-   session token (`janua.dev`, no `client_id`) is accepted; a token Janua issues
-   to any OAuth client is accepted only once that client carries the `eido-api`
-   audience. Administration is the `eido:admin` application role.
+   session token (`janua.dev`, no `client_id`) is accepted. Do not add
+   `eido-api` (or any audience) until Janua reserves it for eido's own client:
+   Janua does not reserve audiences, so anyone could otherwise register a
+   client that mints tokens eido accepts. Administration is the `eido:admin`
+   application role on a first-party session token only.
