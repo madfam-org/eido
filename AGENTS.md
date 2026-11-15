@@ -95,8 +95,23 @@ Two distinctions the code depends on:
 - API dependency notes: `sqlalchemy` is pinned `<2.1`. Token verification uses
   PyJWT (`apps/api/src/eido_api/auth.py`): the JWKS key is picked by `kid`,
   `["RS256"]` only, `exp` required, 30 s leeway, and an unknown `kid` refetches
-  the JWKS once (at most once per 60 s). `aud` and `iss` are not checked; no
-  audience or issuer is configured for this service.
+  the JWKS once (at most once per 60 s). `iss` must equal `JANUA_ISSUER`
+  (default `https://auth.madfam.io`) and `aud` must be in `JANUA_AUDIENCES`
+  (default `eido-api,janua.dev`). A token for `eido-api` is accepted as issued
+  (never a refresh token). A token accepted only because of Janua's shared
+  `janua.dev` audience must be a person's first-party session access token:
+  `type: "access"`, no `client_id`, no `scope`, not a machine or
+  service-principal token. The defaults are the production values, so the
+  manifests do not set these variables.
+- **Roles:** authorization uses the application role `eido:admin` only. A bare
+  `admin` (a Janua organization role) grants nothing. Do not add checks on
+  bare roles; use `<product>:<role>`.
+- **Capture visibility** (`apps/api/src/eido_api/services/access.py`): a
+  public capture is readable by anyone; a private one only by its owner or an
+  `eido:admin`, and everyone else gets 404 (not 403), so its existence is not
+  disclosed. Every route that returns a capture, its artifact URLs, or its
+  annotations by id goes through `get_readable_capture`; annotating needs the
+  same access as reading. Pinned by `apps/api/tests/test_capture_access.py`.
 
 ## Pending work
 

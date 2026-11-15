@@ -144,3 +144,9 @@ Provisioning brings up *shells*. Remaining product engineering:
 4. **Auth on capture mutations + a Janua service token for handoffs** — the
    upload page pastes a Janua bearer token until the eido-web OIDC client is
    registered; the eido→sibling hand-offs need an M2M token.
+   The API requires `iss` = `JANUA_ISSUER` (default `https://auth.madfam.io`)
+   and `aud` in `JANUA_AUDIENCES` (default `eido-api,janua.dev`); the defaults
+   are the production values, so the manifests set neither. A pasted Janua
+   session token (`janua.dev`, no `client_id`) is accepted; a token Janua issues
+   to any OAuth client is accepted only once that client carries the `eido-api`
+   audience. Administration is the `eido:admin` application role.
