@@ -47,7 +47,9 @@ class Settings(BaseSettings):
 
     # Ecosystem handoff URLs
     blueprint_harvester_url: str = "http://blueprint-harvester-api:8000"
-    yantra4d_url: str = "http://yantra4d-api:8000"
+    # Yantra4D has no in-cluster service: its API is public. eido has no caller yet
+    # (RFC 0059 wave 3 adds the mount); the handoff retry refuses this target.
+    yantra4d_url: str = "https://api.yantra4d.com"
     factlas_url: str = "http://factlas-api:8000"
     ceq_url: str = "http://ceq-api:8000"
     selva_url: str = "http://autoswarm-api:8000"   # LLM inference router (Selva)
