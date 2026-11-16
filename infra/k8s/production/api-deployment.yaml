@@ -27,7 +27,7 @@ spec:
         - name: ghcr-credentials
       containers:
         - name: api
-          image: ghcr.io/madfam-org/eido-api@sha256:611b77e3b0489ee90b3644ff3b4113665eedcea28fbd9c9075e15af91daf5abe
+          image: ghcr.io/madfam-org/eido-api@sha256:5732d70f41c9ebbd47090acb1ac71ad23bb89dc703aae5874c7cc0c27c3b2134
           ports:
             - containerPort: 8000
           env:
