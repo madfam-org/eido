@@ -104,11 +104,11 @@ Two distinctions the code depends on:
   `https://auth.madfam.io`) and `aud` must be in `JANUA_AUDIENCES` (default
   `janua.dev` only). A `janua.dev` token must be a person's first-party
   session access token: no `client_id`, no `scope`, not a machine or
-  service-principal token. Janua reserves only the audiences in its registry
-  (`reserved_oauth_boundaries.py`) and `eido-api` is not on it (anyone can
-  register a client claiming it), so add an audience to `JANUA_AUDIENCES`
-  only after it is on that registry and no other client row carries it;
-  tokens on such an audience are accepted as issued and never grant
+  service-principal token. `eido-api` is on Janua's reserved-audience
+  registry (`reserved_oauth_boundaries.py`; only a platform admin registers a
+  client with it, and on 2026-11-17 none carried it), so it may be added to
+  `JANUA_AUDIENCES` once eido's own client is registered with that audience;
+  never add an audience that is not reserved there. Tokens on such an audience are accepted as issued and never grant
   `eido:admin`. The defaults are the production values, so the manifests do
   not set these variables.
 - **Roles:** authorization uses the application role `eido:admin` only, and

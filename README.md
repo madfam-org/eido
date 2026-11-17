@@ -98,9 +98,9 @@ smoke for it.
   `JANUA_ISSUER` (default `https://auth.madfam.io`) and `aud` must be in
   `JANUA_AUDIENCES` (default `janua.dev` only). `janua.dev` is Janua's shared
   audience, so a token on it must be a person's first-party session access
-  token (no `client_id`, no `scope`, not a machine token). `eido-api` is not
-  on Janua's reserved-audience registry, so that audience is added only
-  after it is reserved there for eido's own client (item 3 in
+  token (no `client_id`, no `scope`, not a machine token). `eido-api` is
+  reserved in Janua (platform admin only; no client carries it yet), so it is
+  added to `JANUA_AUDIENCES` once eido's own client is registered with it (item 3 in
   [Pending work](#pending-work)).
 - Authorization uses the application role `eido:admin`, and only from a
   first-party session token. A bare `admin` organization role grants nothing,
@@ -296,7 +296,7 @@ The single, current pending-work list for this repository (verified against
 |---|------|----------------|----------|------|------|
 | 1 | GPU capacity for reconstruction, and a runnable 3DGS stage | No capture has produced a `.spz` in production. The cluster has no GPU node, the orchestration worker shells `docker run --gpus all` from a CPU-only pod, and the 3DGS trainer calls a module that does not exist | P1 | owner (GPU capacity), eng (trainer and dispatch) | [Current Status](#current-status-2026-10-02) |
 | 2 | Provision R2 storage and the Janua service client | Uploads and the Factlas hand-off cannot complete in production without them (unprovisioned at the last recorded check, 2026-07-10) | P1 | owner | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
-| 3 | Reserve an `eido-api` audience in Janua and register eido's client with it | Only first-party `janua.dev` session tokens are accepted (default `JANUA_AUDIENCES`). `eido-api` is not on Janua's reserved-audience registry (`reserved_oauth_boundaries.py`), so it is added to `JANUA_AUDIENCES` only once it is reserved there and no other client row carries it; OAuth-client and machine tokens need it | P2 | owner | [janua `ISSUER_AND_JWKS.md`](https://github.com/madfam-org/janua/blob/main/docs/reference/ISSUER_AND_JWKS.md) |
+| 3 | Register eido's own Janua client with the `eido-api` audience | Only first-party `janua.dev` session tokens are accepted (default `JANUA_AUDIENCES`). `eido-api` is reserved in Janua since 2026-11-17 (`reserved_oauth_boundaries.py`, platform admin only) and no client carries it; once eido's client is registered with it, add it to `JANUA_AUDIENCES`. OAuth-client and machine tokens need it | P2 | owner | [janua `ISSUER_AND_JWKS.md`](https://github.com/madfam-org/janua/blob/main/docs/reference/ISSUER_AND_JWKS.md) |
 | 4 | Self-host the viewer's HDR environment map | `/capture/[id]` stays on its loading fallback because the CSP blocks drei's third-party HDR; serve it from `public/` or `cdn.eido.cam` rather than widening the CSP | P2 | eng | [Known issues](#known-issues) |
 | 5 | Re-verify production health | Deployment state in this README is "last known good" from 2026-07-10, not re-checked | P2 | owner | [Current Status](#current-status-2026-10-02) |
 | 6 | Component tests for `apps/web` | Its only test is the image-optimizer config guard | P3 | eng | `apps/web/tests/` |
