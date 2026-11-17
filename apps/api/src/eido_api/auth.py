@@ -32,12 +32,11 @@ proves "Janua minted this". The audience says for whom:
     application cannot be replayed here.
   - Any other audience an operator adds to JANUA_AUDIENCES (e.g. `eido-api`)
     is accepted as issued, OAuth-client and machine tokens included, so the
-    replay protection above does NOT hold on this path. Janua reserves only
-    the audiences listed in its registry (`reserved_oauth_boundaries.py`);
-    `eido-api` is not on it, so today any Janua user can register an OAuth
-    client claiming it and obtain tokens for it. Add an audience only after
-    it is on that registry AND no existing client row already carries it.
-    None is configured by default.
+    replay protection above does NOT hold on this path. Add only an audience
+    on Janua's reserved registry (`reserved_oauth_boundaries.py`), where only
+    a platform admin registers a client with it: `eido-api` is (since
+    2026-11-17), and no client carried it then. None is configured by
+    default.
 
 Authorization uses application roles only, and only from a first-party
 session token. Janua's `roles` claim on a session token carries real
